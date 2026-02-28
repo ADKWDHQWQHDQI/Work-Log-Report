@@ -12,7 +12,6 @@ import ForgeReconciler, {
   Lozenge,
   Textfield,
   Select,
-  Badge,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
 
@@ -53,7 +52,6 @@ function matchesSearch(entry, query, filterField) {
   if (filterField === 'comment') {
     return (entry.comment || '').toLowerCase().includes(q);
   }
-  // 'all'
   const fields = [entry.author, entry.comment, entry.date, entry.timeSpent];
   return fields.some((f) => f && String(f).toLowerCase().includes(q));
 }
@@ -86,6 +84,45 @@ const App = () => {
     fetchWorklogs();
   }, []);
 
+  // Extract data safely (works even when worklogs is null)
+  const entries = worklogs && worklogs.entries ? worklogs.entries : [];
+  const totalSeconds = worklogs ? (worklogs.totalSeconds || 0) : 0;
+  const userSummary = worklogs ? (worklogs.userSummary || []) : [];
+
+  // ALL useMemo hooks MUST be called unconditionally (before any return)
+  const filteredEntries = useMemo(
+    function () {
+      return entries.filter(function (e) { return matchesSearch(e, searchQuery, filterField); });
+    },
+    [entries, searchQuery, filterField]
+  );
+
+  const filteredUserSummary = useMemo(
+    function () {
+      if (!searchQuery || !searchQuery.trim()) return userSummary;
+      var userMap = {};
+      filteredEntries.forEach(function (entry) {
+        var key = entry.authorId || entry.author;
+        if (!userMap[key]) {
+          userMap[key] = { name: entry.author, totalSeconds: 0, entryCount: 0 };
+        }
+        userMap[key].totalSeconds += entry.timeSpentSeconds;
+        userMap[key].entryCount += 1;
+      });
+      return Object.values(userMap).sort(function (a, b) { return b.totalSeconds - a.totalSeconds; });
+    },
+    [userSummary, filteredEntries, searchQuery, filterField]
+  );
+
+  const filteredTotalSeconds = useMemo(
+    function () {
+      return filteredEntries.reduce(function (sum, e) { return sum + (e.timeSpentSeconds || 0); }, 0);
+    },
+    [filteredEntries]
+  );
+
+  // --- Now safe to do conditional rendering ---
+
   if (loading) {
     return (
       <Stack space="space.200" alignInline="center">
@@ -108,7 +145,7 @@ const App = () => {
     );
   }
 
-  if (!worklogs || !worklogs.entries || worklogs.entries.length === 0) {
+  if (!worklogs || entries.length === 0) {
     return (
       <SectionMessage appearance="information">
         <Text>
@@ -117,47 +154,6 @@ const App = () => {
       </SectionMessage>
     );
   }
-
-  const { entries, totalSeconds, userSummary } = worklogs;
-
-  // --- Filtered data ---
-  const filteredEntries = useMemo(
-    () => entries.filter((e) => matchesSearch(e, searchQuery, filterField)),
-    [entries, searchQuery, filterField]
-  );
-
-  const filteredUserSummary = useMemo(() => {
-    if (!searchQuery || !searchQuery.trim()) return userSummary;
-    if (filterField === 'person' || filterField === 'all') {
-      // Re-aggregate from filtered entries
-      const userMap = {};
-      filteredEntries.forEach((entry) => {
-        const key = entry.authorId || entry.author;
-        if (!userMap[key]) {
-          userMap[key] = { name: entry.author, totalSeconds: 0, entryCount: 0 };
-        }
-        userMap[key].totalSeconds += entry.timeSpentSeconds;
-        userMap[key].entryCount += 1;
-      });
-      return Object.values(userMap).sort((a, b) => b.totalSeconds - a.totalSeconds);
-    }
-    // 'comment' doesn't filter person rows directly
-    const userMap = {};
-    filteredEntries.forEach((entry) => {
-      const key = entry.authorId || entry.author;
-      if (!userMap[key]) {
-        userMap[key] = { name: entry.author, totalSeconds: 0, entryCount: 0 };
-      }
-      userMap[key].totalSeconds += entry.timeSpentSeconds;
-      userMap[key].entryCount += 1;
-    });
-    return Object.values(userMap).sort((a, b) => b.totalSeconds - a.totalSeconds);
-  }, [userSummary, filteredEntries, searchQuery, filterField]);
-
-  const filteredTotalSeconds = useMemo(
-    () => filteredEntries.reduce((sum, e) => sum + e.timeSpentSeconds, 0),
-    [filteredEntries]
-  );
 
   const isFiltered = searchQuery && searchQuery.trim().length > 0;
 
@@ -178,7 +174,7 @@ const App = () => {
         ? Math.round((user.totalSeconds / baseTotalForSummary) * 100)
         : 0;
     return {
-      key: `user-${index}`,
+      key: 'user-' + index,
       cells: [
         { key: 'person', content: user.name },
         {
@@ -211,7 +207,7 @@ const App = () => {
   };
 
   const entriesRows = filteredEntries.map((entry, index) => ({
-    key: `entry-${index}`,
+    key: 'entry-' + index,
     cells: [
       { key: 'person', content: entry.author },
       { key: 'date', content: entry.date },
@@ -225,11 +221,9 @@ const App = () => {
     ],
   }));
 
-  const searchPlaceholder = filterField === 'all'
-    ? 'Search across all fields...'
-    : filterField === 'person'
-      ? 'Search by person name...'
-      : 'Search by comment text...';
+  var searchPlaceholder = 'Search across all fields...';
+  if (filterField === 'person') searchPlaceholder = 'Search by person name...';
+  else if (filterField === 'comment') searchPlaceholder = 'Search by comment text...';
 
   return (
     <Stack space="space.200">
@@ -262,11 +256,10 @@ const App = () => {
           All Entries
         </Button>
         <Button appearance="subtle" onClick={fetchWorklogs}>
-          ↻ Refresh
+          Refresh
         </Button>
       </Inline>
 
-      {/* Search & Filter */}
       <Box padding="space.100">
         <Stack space="space.100">
           <Inline space="space.100" alignBlock="center">
@@ -298,12 +291,9 @@ const App = () => {
             )}
           </Inline>
           {isFiltered && (
-            <Inline space="space.100">
-              <Text>
-                Showing {filteredEntries.length} of {entries.length} entries
-              </Text>
-              <Badge appearance="primary">{formatTime(filteredTotalSeconds)}</Badge>
-            </Inline>
+            <Text>
+              Showing {filteredEntries.length} of {entries.length} entries ({formatTime(filteredTotalSeconds)})
+            </Text>
           )}
         </Stack>
       </Box>

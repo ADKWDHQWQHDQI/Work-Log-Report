@@ -12,7 +12,6 @@ import ForgeReconciler, {
   Lozenge,
   Textfield,
   Select,
-  Badge,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
 
@@ -39,7 +38,6 @@ const FILTER_OPTIONS = [
   { label: 'Sprint', value: 'sprint' },
 ];
 
-// Generic search function — matches a query against an entry based on the selected filter
 function matchesSearch(entry, query, filterField) {
   if (!query) return true;
   const q = query.toLowerCase().trim();
@@ -57,7 +55,6 @@ function matchesSearch(entry, query, filterField) {
   if (filterField === 'sprint') {
     return (entry.sprintName || '').toLowerCase().includes(q);
   }
-  // 'all' — search across all fields
   const fields = [
     entry.author, entry.issueKey, entry.key, entry.issueSummary,
     entry.summary, entry.issueType, entry.sprintName,
@@ -66,19 +63,6 @@ function matchesSearch(entry, query, filterField) {
   return fields.some((f) => f && String(f).toLowerCase().includes(q));
 }
 
-// For person view — match against user-level summary produced from filtered entries
-function matchesPersonSearch(user, query, filterField) {
-  if (!query) return true;
-  const q = query.toLowerCase().trim();
-  if (!q) return true;
-  if (filterField === 'assignee' || filterField === 'all') {
-    return (user.name || '').toLowerCase().includes(q);
-  }
-  // Other filters don't apply directly to person aggregation
-  return true;
-}
-
-// For issue view
 function matchesIssueSearch(issue, query, filterField) {
   if (!query) return true;
   const q = query.toLowerCase().trim();
@@ -94,10 +78,8 @@ function matchesIssueSearch(issue, query, filterField) {
     return (issue.sprintName || '').toLowerCase().includes(q);
   }
   if (filterField === 'assignee') {
-    // Issue view doesn't have direct assignee, pass through
     return true;
   }
-  // 'all'
   const fields = [issue.key, issue.summary, issue.status, issue.issueType, issue.sprintName];
   return fields.some((f) => f && String(f).toLowerCase().includes(q));
 }
@@ -139,6 +121,62 @@ const ProjectPage = () => {
     fetchData('all');
   }, []);
 
+  // Extract data (safe even when data is null)
+  const entries = data && data.entries ? data.entries : [];
+  const totalSeconds = data ? (data.totalSeconds || 0) : 0;
+  const userSummary = data ? (data.userSummary || []) : [];
+  const issueSummary = data ? (data.issueSummary || []) : [];
+  const projectKey = data ? (data.projectKey || '?') : '?';
+  const hasEntries = entries.length > 0;
+
+  // ALL useMemo hooks MUST be called unconditionally (before any return)
+  const filteredEntries = useMemo(
+    function () {
+      return entries.filter(function (e) { return matchesSearch(e, searchQuery, filterField); });
+    },
+    [entries, searchQuery, filterField]
+  );
+
+  const filteredUserSummary = useMemo(
+    function () {
+      if (!searchQuery || !searchQuery.trim()) return userSummary;
+      if (filterField === 'assignee' || filterField === 'all') {
+        return userSummary.filter(function (u) {
+          var q = searchQuery.toLowerCase().trim();
+          return (u.name || '').toLowerCase().includes(q);
+        });
+      }
+      var userMap = {};
+      filteredEntries.forEach(function (entry) {
+        var key = entry.authorId || entry.author;
+        if (!userMap[key]) {
+          userMap[key] = { name: entry.author, totalSeconds: 0, entryCount: 0 };
+        }
+        userMap[key].totalSeconds += entry.timeSpentSeconds;
+        userMap[key].entryCount += 1;
+      });
+      return Object.values(userMap).sort(function (a, b) { return b.totalSeconds - a.totalSeconds; });
+    },
+    [userSummary, filteredEntries, searchQuery, filterField]
+  );
+
+  const filteredIssueSummary = useMemo(
+    function () {
+      if (!searchQuery || !searchQuery.trim()) return issueSummary;
+      return issueSummary.filter(function (iss) { return matchesIssueSearch(iss, searchQuery, filterField); });
+    },
+    [issueSummary, searchQuery, filterField]
+  );
+
+  const filteredTotalSeconds = useMemo(
+    function () {
+      return filteredEntries.reduce(function (sum, e) { return sum + (e.timeSpentSeconds || 0); }, 0);
+    },
+    [filteredEntries]
+  );
+
+  // --- Now safe to do conditional rendering ---
+
   if (loading) {
     return (
       <Stack space="space.300" alignInline="center">
@@ -165,9 +203,6 @@ const ProjectPage = () => {
       </Stack>
     );
   }
-
-  const entries = data?.entries || [];
-  const hasEntries = entries.length > 0;
 
   if (!data || !hasEntries) {
     return (
@@ -209,49 +244,7 @@ const ProjectPage = () => {
     );
   }
 
-  const totalSeconds = data.totalSeconds || 0;
-  const userSummary = data.userSummary || [];
-  const issueSummary = data.issueSummary || [];
-  const projectKey = data.projectKey || '?';
-
-  // --- Filtered data based on search ---
-  const filteredEntries = useMemo(
-    () => entries.filter((e) => matchesSearch(e, searchQuery, filterField)),
-    [entries, searchQuery, filterField]
-  );
-
-  const filteredUserSummary = useMemo(() => {
-    if (!searchQuery || !searchQuery.trim()) return userSummary;
-    // If filtering by assignee, filter person rows directly
-    if (filterField === 'assignee' || filterField === 'all') {
-      return userSummary.filter((u) => matchesPersonSearch(u, searchQuery, filterField));
-    }
-    // For other filters (issueKey, issueType, sprint), re-aggregate from filtered entries
-    const userMap = {};
-    filteredEntries.forEach((entry) => {
-      if (!userMap[entry.authorId]) {
-        userMap[entry.authorId] = { name: entry.author, totalSeconds: 0, entryCount: 0 };
-      }
-      userMap[entry.authorId].totalSeconds += entry.timeSpentSeconds;
-      userMap[entry.authorId].entryCount += 1;
-    });
-    return Object.values(userMap).sort((a, b) => b.totalSeconds - a.totalSeconds);
-  }, [userSummary, filteredEntries, searchQuery, filterField]);
-
-  const filteredIssueSummary = useMemo(() => {
-    if (!searchQuery || !searchQuery.trim()) return issueSummary;
-    return issueSummary.filter((iss) => matchesIssueSearch(iss, searchQuery, filterField));
-  }, [issueSummary, searchQuery, filterField]);
-
-  // Compute filtered total for display
-  const filteredTotalSeconds = useMemo(
-    () => filteredEntries.reduce((sum, e) => sum + e.timeSpentSeconds, 0),
-    [filteredEntries]
-  );
-
   const isFiltered = searchQuery && searchQuery.trim().length > 0;
-
-  // --- DynamicTable definitions ---
 
   // "By Person" table
   const peopleHead = {
@@ -270,7 +263,7 @@ const ProjectPage = () => {
       ? Math.round((user.totalSeconds / baseTotalForPeople) * 100)
       : 0;
     return {
-      key: `user-${index}`,
+      key: 'user-' + index,
       cells: [
         { key: 'num', content: String(index + 1) },
         { key: 'person', content: user.name },
@@ -307,7 +300,7 @@ const ProjectPage = () => {
   };
 
   const issuesRows = filteredIssueSummary.map((issue, index) => ({
-    key: `issue-${index}`,
+    key: 'issue-' + index,
     cells: [
       {
         key: 'issue',
@@ -320,7 +313,7 @@ const ProjectPage = () => {
         key: 'summary',
         content:
           issue.summary.length > 50
-            ? issue.summary.substring(0, 50) + '…'
+            ? issue.summary.substring(0, 50) + '...'
             : issue.summary,
       },
       {
@@ -354,7 +347,7 @@ const ProjectPage = () => {
   };
 
   const detailsRows = filteredEntries.slice(0, 100).map((entry, index) => ({
-    key: `entry-${index}`,
+    key: 'entry-' + index,
     cells: [
       {
         key: 'issue',
@@ -376,23 +369,18 @@ const ProjectPage = () => {
         key: 'comment',
         content: entry.comment
           ? entry.comment.length > 40
-            ? entry.comment.substring(0, 40) + '…'
+            ? entry.comment.substring(0, 40) + '...'
             : entry.comment
           : '—',
       },
     ],
   }));
 
-  // Determine search placeholder based on selected filter
-  const searchPlaceholder = filterField === 'all'
-    ? 'Search across all fields...'
-    : filterField === 'assignee'
-      ? 'Search by person name...'
-      : filterField === 'issueKey'
-        ? 'Search by issue key (e.g. AI-16)...'
-        : filterField === 'issueType'
-          ? 'Search by issue type (e.g. Task, Bug, Story)...'
-          : 'Search by sprint name...';
+  var searchPlaceholder = 'Search across all fields...';
+  if (filterField === 'assignee') searchPlaceholder = 'Search by person name...';
+  else if (filterField === 'issueKey') searchPlaceholder = 'Search by issue key (e.g. AI-16)...';
+  else if (filterField === 'issueType') searchPlaceholder = 'Search by issue type (e.g. Task, Bug)...';
+  else if (filterField === 'sprint') searchPlaceholder = 'Search by sprint name...';
 
   return (
     <Stack space="space.300">
@@ -460,12 +448,11 @@ const ProjectPage = () => {
             All Entries
           </Button>
           <Button appearance="subtle" onClick={() => fetchData()}>
-            ↻ Refresh
+            Refresh
           </Button>
         </Inline>
       </Stack>
 
-      {/* Search & Filter bar */}
       <Box padding="space.100">
         <Stack space="space.100">
           <Inline space="space.100" alignBlock="center">
@@ -497,12 +484,9 @@ const ProjectPage = () => {
             )}
           </Inline>
           {isFiltered && (
-            <Inline space="space.100">
-              <Text>
-                Showing {filteredEntries.length} of {entries.length} entries
-              </Text>
-              <Badge appearance="primary">{formatTime(filteredTotalSeconds)}</Badge>
-            </Inline>
+            <Text>
+              Showing {filteredEntries.length} of {entries.length} entries ({formatTime(filteredTotalSeconds)})
+            </Text>
           )}
         </Stack>
       </Box>
