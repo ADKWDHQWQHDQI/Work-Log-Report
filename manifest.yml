@@ -1,0 +1,38 @@
+modules:
+  jira:issuePanel:
+    - key: worklog-summary-issue-panel
+      title: Work Log Summary
+      description: View a detailed summary of all time logged on this issue
+      icon: https://api.iconify.design/mdi/clock-check-outline.svg
+      resource: main
+      render: native
+      resolver:
+        function: resolver
+  jira:projectPage:
+    - key: worklog-summary-project-page
+      title: Team Work Log Report
+      description: View team-wide work log reports across all issues in this project
+      icon: https://api.iconify.design/mdi/chart-bar.svg
+      resource: projectPage
+      render: native
+      resolver:
+        function: resolver
+      route: worklog-report
+  function:
+    - key: resolver
+      handler: index.handler
+resources:
+  - key: main
+    path: src/frontend/index.jsx
+  - key: projectPage
+    path: src/project-page/index.jsx
+permissions:
+  scopes:
+    - read:jira-work
+    - read:jira-user
+app:
+  runtime:
+    name: nodejs24.x
+    memoryMB: 256
+    architecture: arm64
+  id: ari:cloud:ecosystem::app/14b01b43-fd26-47c8-a802-7b195617b68a

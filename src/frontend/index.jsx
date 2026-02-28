@@ -1,0 +1,219 @@
+import React, { useState, useEffect } from 'react';
+import ForgeReconciler, {
+  Text,
+  Heading,
+  DynamicTable,
+  Stack,
+  Box,
+  Inline,
+  SectionMessage,
+  Spinner,
+  Button,
+  Lozenge,
+} from '@forge/react';
+import { invoke } from '@forge/bridge';
+
+function formatTime(seconds) {
+  if (!seconds || seconds === 0) return '0m';
+  const days = Math.floor(seconds / 28800);
+  const hours = Math.floor((seconds % 28800) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+
+  const parts = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+
+  return parts.join(' ') || '0m';
+}
+
+function getPercentageAppearance(percentage) {
+  if (percentage >= 50) return 'success';
+  if (percentage >= 25) return 'inprogress';
+  return 'default';
+}
+
+const App = () => {
+  const [worklogs, setWorklogs] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [view, setView] = useState('summary');
+
+  const fetchWorklogs = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await invoke('getWorklogs');
+      if (data.error) {
+        setError(data.error);
+      } else {
+        setWorklogs(data);
+      }
+    } catch (err) {
+      setError('Failed to fetch work logs. Please try again.');
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchWorklogs();
+  }, []);
+
+  if (loading) {
+    return (
+      <Stack space="space.200" alignInline="center">
+        <Spinner size="large" />
+        <Text>Loading work logs...</Text>
+      </Stack>
+    );
+  }
+
+  if (error) {
+    return (
+      <Stack space="space.200">
+        <SectionMessage appearance="error">
+          <Text>{error}</Text>
+        </SectionMessage>
+        <Button appearance="primary" onClick={fetchWorklogs}>
+          Try Again
+        </Button>
+      </Stack>
+    );
+  }
+
+  if (!worklogs || !worklogs.entries || worklogs.entries.length === 0) {
+    return (
+      <SectionMessage appearance="information">
+        <Text>
+          No work logs found for this issue. Start logging time to see a summary here!
+        </Text>
+      </SectionMessage>
+    );
+  }
+
+  const { entries, totalSeconds, userSummary } = worklogs;
+
+  // DynamicTable head/rows for the "Per Person" summary view
+  const summaryHead = {
+    cells: [
+      { key: 'person', content: 'Person', isSortable: true },
+      { key: 'time', content: 'Time Logged', isSortable: true },
+      { key: 'entries', content: 'Entries', isSortable: true },
+      { key: 'share', content: 'Share', isSortable: true },
+    ],
+  };
+
+  const summaryRows = userSummary.map((user, index) => {
+    const percentage =
+      totalSeconds > 0
+        ? Math.round((user.totalSeconds / totalSeconds) * 100)
+        : 0;
+    return {
+      key: `user-${index}`,
+      cells: [
+        { key: 'person', content: user.name },
+        {
+          key: 'time',
+          content: (
+            <Lozenge appearance="success">{formatTime(user.totalSeconds)}</Lozenge>
+          ),
+        },
+        { key: 'entries', content: String(user.entryCount) },
+        {
+          key: 'share',
+          content: (
+            <Lozenge appearance={getPercentageAppearance(percentage)}>
+              {percentage}%
+            </Lozenge>
+          ),
+        },
+      ],
+    };
+  });
+
+  // DynamicTable head/rows for the "All Entries" view
+  const entriesHead = {
+    cells: [
+      { key: 'person', content: 'Person', isSortable: true },
+      { key: 'date', content: 'Date', isSortable: true },
+      { key: 'time', content: 'Time' },
+      { key: 'comment', content: 'Comment' },
+    ],
+  };
+
+  const entriesRows = entries.map((entry, index) => ({
+    key: `entry-${index}`,
+    cells: [
+      { key: 'person', content: entry.author },
+      { key: 'date', content: entry.date },
+      {
+        key: 'time',
+        content: (
+          <Lozenge appearance="success">{entry.timeSpent}</Lozenge>
+        ),
+      },
+      { key: 'comment', content: entry.comment || '—' },
+    ],
+  }));
+
+  return (
+    <Stack space="space.200">
+      <Box padding="space.200">
+        <Inline spread="space-between" alignBlock="center">
+          <Stack space="space.050">
+            <Heading as="h3">Work Log Summary</Heading>
+            <Text>
+              {entries.length} {entries.length === 1 ? 'entry' : 'entries'} by{' '}
+              {userSummary.length} {userSummary.length === 1 ? 'person' : 'people'}
+            </Text>
+          </Stack>
+          <Lozenge appearance="success" isBold>
+            {formatTime(totalSeconds)} total
+          </Lozenge>
+        </Inline>
+      </Box>
+
+      <Inline space="space.100">
+        <Button
+          appearance={view === 'summary' ? 'primary' : 'default'}
+          onClick={() => setView('summary')}
+        >
+          Per Person
+        </Button>
+        <Button
+          appearance={view === 'table' ? 'primary' : 'default'}
+          onClick={() => setView('table')}
+        >
+          All Entries
+        </Button>
+        <Button appearance="subtle" onClick={fetchWorklogs}>
+          ↻ Refresh
+        </Button>
+      </Inline>
+
+      {view === 'summary' && (
+        <DynamicTable
+          head={summaryHead}
+          rows={summaryRows}
+          rowsPerPage={20}
+          defaultSortKey="time"
+          defaultSortOrder="DESC"
+          label="Work log summary per person"
+        />
+      )}
+
+      {view === 'table' && (
+        <DynamicTable
+          head={entriesHead}
+          rows={entriesRows}
+          rowsPerPage={20}
+          defaultSortKey="date"
+          defaultSortOrder="DESC"
+          label="All work log entries"
+        />
+      )}
+    </Stack>
+  );
+};
+
+ForgeReconciler.render(<App />);
