@@ -12,6 +12,7 @@ import ForgeReconciler, {
   Lozenge,
   Textfield,
   Select,
+  xcss,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
 
@@ -40,6 +41,9 @@ const FILTER_OPTIONS = [
   { label: 'Person', value: 'person' },
   { label: 'Comment', value: 'comment' },
 ];
+
+const compactSelectStyles = xcss({ maxWidth: '120px' });
+const compactFieldStyles = xcss({ maxWidth: '160px' });
 
 function matchesSearch(entry, query, filterField) {
   if (!query) return true;
@@ -260,43 +264,44 @@ const App = () => {
         </Button>
       </Inline>
 
-      <Box padding="space.100">
-        <Stack space="space.100">
-          <Inline space="space.100" alignBlock="center">
-            <Box>
-              <Select
-                appearance="default"
-                options={FILTER_OPTIONS}
-                value={FILTER_OPTIONS.find((o) => o.value === filterField)}
-                onChange={(option) => setFilterField(option.value)}
-                placeholder="Filter by..."
-                name="search-filter"
-              />
-            </Box>
-            <Box>
-              <Textfield
-                placeholder={searchPlaceholder}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                name="search-box"
-              />
-            </Box>
-            {isFiltered && (
-              <Button
-                appearance="subtle"
-                onClick={() => { setSearchQuery(''); setFilterField('all'); }}
-              >
-                Clear
-              </Button>
-            )}
-          </Inline>
+      <Inline spread="space-between" alignBlock="center">
+        <Stack space="space.050">
+          <Heading as="h4">
+            {view === 'summary' ? 'Per Person' : 'All Entries'}
+          </Heading>
           {isFiltered && (
-            <Text>
-              Showing {filteredEntries.length} of {entries.length} entries ({formatTime(filteredTotalSeconds)})
-            </Text>
+            <Text>Showing {filteredEntries.length} of {entries.length} entries ({formatTime(filteredTotalSeconds)})</Text>
           )}
         </Stack>
-      </Box>
+        <Inline space="space.050" alignBlock="center">
+          <Box xcss={compactSelectStyles}>
+            <Select
+              appearance="default"
+              options={FILTER_OPTIONS}
+              value={FILTER_OPTIONS.find((o) => o.value === filterField)}
+              onChange={(option) => setFilterField(option.value)}
+              placeholder="Filter by..."
+              name="search-filter"
+            />
+          </Box>
+          <Box xcss={compactFieldStyles}>
+            <Textfield
+              placeholder={searchPlaceholder}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              name="search-box"
+            />
+          </Box>
+          {isFiltered && (
+            <Button
+              appearance="subtle"
+              onClick={() => { setSearchQuery(''); setFilterField('all'); }}
+            >
+              Clear
+            </Button>
+          )}
+        </Inline>
+      </Inline>
 
       {view === 'summary' && (
         filteredUserSummary.length === 0 ? (

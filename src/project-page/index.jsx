@@ -12,6 +12,7 @@ import ForgeReconciler, {
   Lozenge,
   Textfield,
   Select,
+  xcss,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
 
@@ -37,6 +38,9 @@ const FILTER_OPTIONS = [
   { label: 'Issue Type', value: 'issueType' },
   { label: 'Sprint', value: 'sprint' },
 ];
+
+const compactSelectStyles = xcss({ maxWidth: '120px' });
+const compactFieldStyles = xcss({ maxWidth: '160px' });
 
 function matchesSearch(entry, query, filterField) {
   if (!query) return true;
@@ -453,47 +457,47 @@ const ProjectPage = () => {
         </Inline>
       </Stack>
 
-      <Box padding="space.100">
-        <Stack space="space.100">
-          <Inline space="space.100" alignBlock="center">
-            <Box>
-              <Select
-                appearance="default"
-                options={FILTER_OPTIONS}
-                value={FILTER_OPTIONS.find((o) => o.value === filterField)}
-                onChange={(option) => setFilterField(option.value)}
-                placeholder="Filter by..."
-                name="search-filter"
-              />
-            </Box>
-            <Box>
-              <Textfield
-                placeholder={searchPlaceholder}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                name="search-box"
-              />
-            </Box>
-            {isFiltered && (
-              <Button
-                appearance="subtle"
-                onClick={() => { setSearchQuery(''); setFilterField('all'); }}
-              >
-                Clear
-              </Button>
-            )}
-          </Inline>
+      <Inline spread="space-between" alignBlock="center">
+        <Stack space="space.050">
+          <Heading as="h4">
+            {view === 'people' ? 'Time Logged Per Person' : view === 'issues' ? 'Time Logged Per Issue' : 'All Work Log Entries'}
+          </Heading>
           {isFiltered && (
-            <Text>
-              Showing {filteredEntries.length} of {entries.length} entries ({formatTime(filteredTotalSeconds)})
-            </Text>
+            <Text>Showing {filteredEntries.length} of {entries.length} entries ({formatTime(filteredTotalSeconds)})</Text>
           )}
         </Stack>
-      </Box>
+        <Inline space="space.050" alignBlock="center">
+          <Box xcss={compactSelectStyles}>
+            <Select
+              appearance="default"
+              options={FILTER_OPTIONS}
+              value={FILTER_OPTIONS.find((o) => o.value === filterField)}
+              onChange={(option) => setFilterField(option.value)}
+              placeholder="Filter by..."
+              name="search-filter"
+            />
+          </Box>
+          <Box xcss={compactFieldStyles}>
+            <Textfield
+              placeholder={searchPlaceholder}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              name="search-box"
+            />
+          </Box>
+          {isFiltered && (
+            <Button
+              appearance="subtle"
+              onClick={() => { setSearchQuery(''); setFilterField('all'); }}
+            >
+              Clear
+            </Button>
+          )}
+        </Inline>
+      </Inline>
 
       {view === 'people' && (
         <Stack space="space.100">
-          <Heading as="h4">Time Logged Per Person</Heading>
           {filteredUserSummary.length === 0 ? (
             <SectionMessage appearance="information">
               <Text>No results match your search.</Text>
@@ -513,7 +517,6 @@ const ProjectPage = () => {
 
       {view === 'issues' && (
         <Stack space="space.100">
-          <Heading as="h4">Time Logged Per Issue</Heading>
           {filteredIssueSummary.length === 0 ? (
             <SectionMessage appearance="information">
               <Text>No results match your search.</Text>
@@ -533,7 +536,6 @@ const ProjectPage = () => {
 
       {view === 'details' && (
         <Stack space="space.100">
-          <Heading as="h4">All Work Log Entries</Heading>
           {filteredEntries.length === 0 ? (
             <SectionMessage appearance="information">
               <Text>No results match your search.</Text>
