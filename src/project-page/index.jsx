@@ -108,6 +108,7 @@ const ProjectPage = () => {
   const [filterField, setFilterField] = useState('all');
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
+  const [exporting, setExporting] = useState(false);
 
   const fetchData = async (selectedPeriod, startOverride, endOverride) => {
     setLoading(true);
@@ -203,24 +204,31 @@ const ProjectPage = () => {
     [filteredEntries]
   );
 
-  var handleExport = function () {
-    var header = 'Issue Key,Issue Type,Summary,Status,Sprint,Person,Date,Time Logged,Time (seconds),Comment';
-    var rows = filteredEntries.map(function (e) {
-      return [
-        escapeCSV(e.issueKey), escapeCSV(e.issueType),
-        escapeCSV(e.issueSummary || e.summary),
-        escapeCSV(e.issueStatus || e.status),
-        escapeCSV(e.sprintName), escapeCSV(e.author),
-        escapeCSV(e.date), escapeCSV(e.timeSpent),
-        String(e.timeSpentSeconds || 0), escapeCSV(e.comment),
-      ].join(',');
-    });
-    var csv = header + '\n' + rows.join('\n');
+  var handleExport = async function () {
+    setExporting(true);
     try {
-      router.open('data:text/csv;charset=utf-8,' + encodeURIComponent(csv));
+      var header = 'Issue Key,Issue Type,Summary,Status,Sprint,Person,Date,Time Logged,Time (seconds),Comment';
+      var rows = filteredEntries.map(function (e) {
+        return [
+          escapeCSV(e.issueKey), escapeCSV(e.issueType),
+          escapeCSV(e.issueSummary || e.summary),
+          escapeCSV(e.issueStatus || e.status),
+          escapeCSV(e.sprintName), escapeCSV(e.author),
+          escapeCSV(e.date), escapeCSV(e.timeSpent),
+          String(e.timeSpentSeconds || 0), escapeCSV(e.comment),
+        ].join(',');
+      });
+      var csv = header + '\n' + rows.join('\n');
+      var result = await invoke('prepareExport', { csv: csv });
+      if (result && result.url) {
+        await router.open(result.url);
+      } else {
+        console.error('Export error:', result?.error || 'Unknown error');
+      }
     } catch (err) {
       console.error('Export failed:', err);
     }
+    setExporting(false);
   };
 
   // --- Now safe to do conditional rendering ---
@@ -458,23 +466,28 @@ const ProjectPage = () => {
   return (
     <Stack space="space.300">
       <Box padding="space.200">
-        <Stack space="space.100">
-          <Heading as="h3">{projectKey} — Work Log Summary</Heading>
-          <Inline space="space.200">
-            <Lozenge appearance="success" isBold>
-              {formatTime(totalSeconds)} total
-            </Lozenge>
-            <Lozenge appearance="inprogress">
-              {userSummary.length} {userSummary.length === 1 ? 'contributor' : 'contributors'}
-            </Lozenge>
-            <Lozenge appearance="default">
-              {issueSummary.length} {issueSummary.length === 1 ? 'issue' : 'issues'} with logs
-            </Lozenge>
-            <Lozenge appearance="moved">
-              {entries.length} total entries
-            </Lozenge>
-          </Inline>
-        </Stack>
+        <Inline spread="space-between" alignBlock="center">
+          <Stack space="space.100">
+            <Heading as="h3">{projectKey}</Heading>
+            <Inline space="space.200">
+              <Lozenge appearance="success" isBold>
+                {formatTime(totalSeconds)} total
+              </Lozenge>
+              <Lozenge appearance="inprogress">
+                {userSummary.length} {userSummary.length === 1 ? 'contributor' : 'contributors'}
+              </Lozenge>
+              <Lozenge appearance="default">
+                {issueSummary.length} {issueSummary.length === 1 ? 'issue' : 'issues'} with logs
+              </Lozenge>
+              <Lozenge appearance="moved">
+                {entries.length} total entries
+              </Lozenge>
+            </Inline>
+          </Stack>
+          <Button appearance="primary" onClick={handleExport} isDisabled={exporting}>
+            {exporting ? 'Exporting...' : 'Export CSV'}
+          </Button>
+        </Inline>
       </Box>
 
       <Stack space="space.100">
@@ -547,9 +560,6 @@ const ProjectPage = () => {
           </Button>
           <Button appearance="subtle" onClick={() => fetchData()}>
             Refresh
-          </Button>
-          <Button appearance="default" onClick={handleExport}>
-            Export CSV
           </Button>
         </Inline>
       </Stack>

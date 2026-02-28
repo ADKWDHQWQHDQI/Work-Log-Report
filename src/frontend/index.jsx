@@ -83,6 +83,7 @@ const App = () => {
   const [groupMembers, setGroupMembers] = useState([]);
   const [groupsLoading, setGroupsLoading] = useState(false);
   const [membersLoading, setMembersLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const fetchWorklogs = async () => {
     setLoading(true);
@@ -194,22 +195,29 @@ const App = () => {
     [filteredEntries]
   );
 
-  var handleExport = function () {
-    var issueKey = worklogs ? (worklogs.issueKey || '') : '';
-    var header = 'Issue Key,Person,Date,Time Logged,Time (seconds),Comment';
-    var rows = filteredEntries.map(function (e) {
-      return [
-        escapeCSV(issueKey), escapeCSV(e.author),
-        escapeCSV(e.date), escapeCSV(e.timeSpent),
-        String(e.timeSpentSeconds || 0), escapeCSV(e.comment),
-      ].join(',');
-    });
-    var csv = header + '\n' + rows.join('\n');
+  var handleExport = async function () {
+    setExporting(true);
     try {
-      router.open('data:text/csv;charset=utf-8,' + encodeURIComponent(csv));
+      var issueKey = worklogs ? (worklogs.issueKey || '') : '';
+      var header = 'Issue Key,Person,Date,Time Logged,Time (seconds),Comment';
+      var rows = filteredEntries.map(function (e) {
+        return [
+          escapeCSV(issueKey), escapeCSV(e.author),
+          escapeCSV(e.date), escapeCSV(e.timeSpent),
+          String(e.timeSpentSeconds || 0), escapeCSV(e.comment),
+        ].join(',');
+      });
+      var csv = header + '\n' + rows.join('\n');
+      var result = await invoke('prepareExport', { csv: csv });
+      if (result && result.url) {
+        await router.open(result.url);
+      } else {
+        console.error('Export error:', result?.error || 'Unknown error');
+      }
     } catch (err) {
       console.error('Export failed:', err);
     }
+    setExporting(false);
   };
 
   // --- Now safe to do conditional rendering ---
@@ -331,9 +339,14 @@ const App = () => {
               {userSummary.length} {userSummary.length === 1 ? 'person' : 'people'}
             </Text>
           </Stack>
-          <Lozenge appearance="success" isBold>
-            {formatTime(totalSeconds)} total
-          </Lozenge>
+          <Inline space="space.100" alignBlock="center">
+            <Lozenge appearance="success" isBold>
+              {formatTime(totalSeconds)} total
+            </Lozenge>
+            <Button appearance="primary" onClick={handleExport} isDisabled={exporting}>
+              {exporting ? 'Exporting...' : 'Export CSV'}
+            </Button>
+          </Inline>
         </Inline>
       </Box>
 
@@ -352,9 +365,6 @@ const App = () => {
         </Button>
         <Button appearance="subtle" onClick={fetchWorklogs}>
           Refresh
-        </Button>
-        <Button appearance="default" onClick={handleExport}>
-          Export CSV
         </Button>
       </Inline>
 

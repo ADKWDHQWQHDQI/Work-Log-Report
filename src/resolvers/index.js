@@ -1,5 +1,5 @@
 import Resolver from '@forge/resolver';
-import api, { route } from '@forge/api';
+import api, { route, storage, webTrigger } from '@forge/api';
 
 const resolver = new Resolver();
 
@@ -265,4 +265,72 @@ resolver.define('getProjectWorklogs', async ({ context, payload }) => {
   }
 });
 
+// Resolver: Prepare CSV export (store in Forge storage, return webtrigger download URL)
+resolver.define('prepareExport', async ({ payload }) => {
+  try {
+    const csv = payload?.csv;
+    if (!csv) return { error: 'No data to export.' };
+
+    const exportId = 'csvexport-' + Date.now() + '-' + Math.random().toString(36).substring(2, 8);
+    await storage.set(exportId, csv);
+
+    const baseUrl = await webTrigger.getUrl('csv-export');
+    const separator = baseUrl.includes('?') ? '&' : '?';
+    const url = baseUrl + separator + 'id=' + encodeURIComponent(exportId);
+
+    return { url };
+  } catch (err) {
+    console.error('prepareExport error:', err);
+    return { error: 'Failed to prepare export: ' + (err.message || '') };
+  }
+});
+
 export const handler = resolver.getDefinitions();
+
+// Webtrigger handler: Serves CSV file download
+export async function csvExportHandler(request) {
+  try {
+    const idParam = request.queryParameters?.id;
+    const exportId = Array.isArray(idParam) ? idParam[0] : idParam;
+
+    if (!exportId) {
+      return {
+        body: 'Missing export ID. Please try exporting again.',
+        headers: { 'Content-Type': ['text/plain'] },
+        statusCode: 400,
+        statusText: 'Bad Request',
+      };
+    }
+
+    const csv = await storage.get(exportId);
+    if (!csv) {
+      return {
+        body: 'Export not found or already downloaded. Please try exporting again.',
+        headers: { 'Content-Type': ['text/plain'] },
+        statusCode: 404,
+        statusText: 'Not Found',
+      };
+    }
+
+    // Clean up after retrieval
+    await storage.delete(exportId);
+
+    return {
+      body: csv,
+      headers: {
+        'Content-Type': ['text/csv; charset=utf-8'],
+        'Content-Disposition': ['attachment; filename="worklog-export.csv"'],
+      },
+      statusCode: 200,
+      statusText: 'OK',
+    };
+  } catch (err) {
+    console.error('csvExportHandler error:', err);
+    return {
+      body: 'Export failed. Please try again.',
+      headers: { 'Content-Type': ['text/plain'] },
+      statusCode: 500,
+      statusText: 'Internal Server Error',
+    };
+  }
+}

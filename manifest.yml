@@ -18,9 +18,14 @@ modules:
       resolver:
         function: resolver
       route: worklog-report
+  webtrigger:
+    - key: csv-export
+      function: csvExportFunction
   function:
     - key: resolver
       handler: index.handler
+    - key: csvExportFunction
+      handler: index.csvExportHandler
 resources:
   - key: main
     path: src/frontend/index.jsx
@@ -30,6 +35,7 @@ permissions:
   scopes:
     - read:jira-work
     - read:jira-user
+    - storage:app
 app:
   runtime:
     name: nodejs24.x
