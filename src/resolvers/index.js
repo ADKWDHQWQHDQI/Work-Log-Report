@@ -65,6 +65,15 @@ function processWorklogEntry(log, extraFields = {}) {
   };
 }
 
+function getSprintName(sprintField) {
+  if (!sprintField) return '';
+  // sprint can be an array of sprint objects or a single object
+  if (Array.isArray(sprintField)) {
+    return sprintField.map(s => s.name || '').filter(Boolean).join(', ');
+  }
+  return sprintField.name || '';
+}
+
 function aggregateByUser(entries) {
   const userMap = {};
   entries.forEach((entry) => {
@@ -153,7 +162,7 @@ resolver.define('getProjectWorklogs', async ({ context, payload }) => {
 
     // Use GET /rest/api/3/search/jql with query params via route template
     const searchResponse = await api.asApp().requestJira(
-      route`/rest/api/3/search/jql?jql=${jql}&maxResults=${String(MAX_ISSUES_TO_SCAN)}&fields=summary,status`,
+      route`/rest/api/3/search/jql?jql=${jql}&maxResults=${String(MAX_ISSUES_TO_SCAN)}&fields=summary,status,issuetype,sprint`,
       {
         headers: {
           'Accept': 'application/json',
@@ -185,6 +194,8 @@ resolver.define('getProjectWorklogs', async ({ context, payload }) => {
           const issueKey = issue.key;
           const issueSummary = issue.fields?.summary || issueKey;
           const issueStatus = issue.fields?.status?.name || 'Unknown';
+          const issueType = issue.fields?.issuetype?.name || 'Unknown';
+          const sprintName = getSprintName(issue.fields?.sprint);
 
           try {
             const worklogs = await fetchAllWorklogsForIssue(issueKey);
@@ -192,18 +203,18 @@ resolver.define('getProjectWorklogs', async ({ context, payload }) => {
               const logDate = new Date(log.started);
               return logDate >= startDate && logDate <= now;
             });
-            return { issueKey, issueSummary, issueStatus, filteredLogs };
+            return { issueKey, issueSummary, issueStatus, issueType, sprintName, filteredLogs };
           } catch (err) {
             console.error(`Failed to fetch worklogs for ${issueKey}:`, err);
-            return { issueKey, issueSummary, issueStatus, filteredLogs: [] };
+            return { issueKey, issueSummary, issueStatus, issueType, sprintName, filteredLogs: [] };
           }
         })
       );
 
-      for (const { issueKey, issueSummary, issueStatus, filteredLogs } of batchResults) {
+      for (const { issueKey, issueSummary, issueStatus, issueType, sprintName, filteredLogs } of batchResults) {
         let issueTotal = 0;
         filteredLogs.forEach((log) => {
-          const entry = processWorklogEntry(log, { issueKey, issueSummary, issueStatus });
+          const entry = processWorklogEntry(log, { issueKey, issueSummary, issueStatus, issueType, sprintName });
           allEntries.push(entry);
           issueTotal += log.timeSpentSeconds || 0;
         });
@@ -213,6 +224,8 @@ resolver.define('getProjectWorklogs', async ({ context, payload }) => {
             key: issueKey,
             summary: issueSummary,
             status: issueStatus,
+            issueType,
+            sprintName,
             totalSeconds: issueTotal,
             entryCount: filteredLogs.length,
           };

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import ForgeReconciler, {
   Text,
   Heading,
@@ -10,6 +10,9 @@ import ForgeReconciler, {
   Spinner,
   Button,
   Lozenge,
+  Textfield,
+  Select,
+  Badge,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
 
@@ -33,11 +36,35 @@ function getPercentageAppearance(percentage) {
   return 'default';
 }
 
+const FILTER_OPTIONS = [
+  { label: 'All Fields', value: 'all' },
+  { label: 'Person', value: 'person' },
+  { label: 'Comment', value: 'comment' },
+];
+
+function matchesSearch(entry, query, filterField) {
+  if (!query) return true;
+  const q = query.toLowerCase().trim();
+  if (!q) return true;
+
+  if (filterField === 'person') {
+    return (entry.author || '').toLowerCase().includes(q);
+  }
+  if (filterField === 'comment') {
+    return (entry.comment || '').toLowerCase().includes(q);
+  }
+  // 'all'
+  const fields = [entry.author, entry.comment, entry.date, entry.timeSpent];
+  return fields.some((f) => f && String(f).toLowerCase().includes(q));
+}
+
 const App = () => {
   const [worklogs, setWorklogs] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [view, setView] = useState('summary');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterField, setFilterField] = useState('all');
 
   const fetchWorklogs = async () => {
     setLoading(true);
@@ -93,6 +120,47 @@ const App = () => {
 
   const { entries, totalSeconds, userSummary } = worklogs;
 
+  // --- Filtered data ---
+  const filteredEntries = useMemo(
+    () => entries.filter((e) => matchesSearch(e, searchQuery, filterField)),
+    [entries, searchQuery, filterField]
+  );
+
+  const filteredUserSummary = useMemo(() => {
+    if (!searchQuery || !searchQuery.trim()) return userSummary;
+    if (filterField === 'person' || filterField === 'all') {
+      // Re-aggregate from filtered entries
+      const userMap = {};
+      filteredEntries.forEach((entry) => {
+        const key = entry.authorId || entry.author;
+        if (!userMap[key]) {
+          userMap[key] = { name: entry.author, totalSeconds: 0, entryCount: 0 };
+        }
+        userMap[key].totalSeconds += entry.timeSpentSeconds;
+        userMap[key].entryCount += 1;
+      });
+      return Object.values(userMap).sort((a, b) => b.totalSeconds - a.totalSeconds);
+    }
+    // 'comment' doesn't filter person rows directly
+    const userMap = {};
+    filteredEntries.forEach((entry) => {
+      const key = entry.authorId || entry.author;
+      if (!userMap[key]) {
+        userMap[key] = { name: entry.author, totalSeconds: 0, entryCount: 0 };
+      }
+      userMap[key].totalSeconds += entry.timeSpentSeconds;
+      userMap[key].entryCount += 1;
+    });
+    return Object.values(userMap).sort((a, b) => b.totalSeconds - a.totalSeconds);
+  }, [userSummary, filteredEntries, searchQuery, filterField]);
+
+  const filteredTotalSeconds = useMemo(
+    () => filteredEntries.reduce((sum, e) => sum + e.timeSpentSeconds, 0),
+    [filteredEntries]
+  );
+
+  const isFiltered = searchQuery && searchQuery.trim().length > 0;
+
   // DynamicTable head/rows for the "Per Person" summary view
   const summaryHead = {
     cells: [
@@ -103,10 +171,11 @@ const App = () => {
     ],
   };
 
-  const summaryRows = userSummary.map((user, index) => {
+  const baseTotalForSummary = isFiltered ? filteredTotalSeconds : totalSeconds;
+  const summaryRows = filteredUserSummary.map((user, index) => {
     const percentage =
-      totalSeconds > 0
-        ? Math.round((user.totalSeconds / totalSeconds) * 100)
+      baseTotalForSummary > 0
+        ? Math.round((user.totalSeconds / baseTotalForSummary) * 100)
         : 0;
     return {
       key: `user-${index}`,
@@ -141,7 +210,7 @@ const App = () => {
     ],
   };
 
-  const entriesRows = entries.map((entry, index) => ({
+  const entriesRows = filteredEntries.map((entry, index) => ({
     key: `entry-${index}`,
     cells: [
       { key: 'person', content: entry.author },
@@ -155,6 +224,12 @@ const App = () => {
       { key: 'comment', content: entry.comment || '—' },
     ],
   }));
+
+  const searchPlaceholder = filterField === 'all'
+    ? 'Search across all fields...'
+    : filterField === 'person'
+      ? 'Search by person name...'
+      : 'Search by comment text...';
 
   return (
     <Stack space="space.200">
@@ -191,26 +266,80 @@ const App = () => {
         </Button>
       </Inline>
 
+      {/* Search & Filter */}
+      <Box padding="space.100">
+        <Stack space="space.100">
+          <Inline space="space.100" alignBlock="center">
+            <Box>
+              <Select
+                appearance="default"
+                options={FILTER_OPTIONS}
+                value={FILTER_OPTIONS.find((o) => o.value === filterField)}
+                onChange={(option) => setFilterField(option.value)}
+                placeholder="Filter by..."
+                name="search-filter"
+              />
+            </Box>
+            <Box>
+              <Textfield
+                placeholder={searchPlaceholder}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                name="search-box"
+              />
+            </Box>
+            {isFiltered && (
+              <Button
+                appearance="subtle"
+                onClick={() => { setSearchQuery(''); setFilterField('all'); }}
+              >
+                Clear
+              </Button>
+            )}
+          </Inline>
+          {isFiltered && (
+            <Inline space="space.100">
+              <Text>
+                Showing {filteredEntries.length} of {entries.length} entries
+              </Text>
+              <Badge appearance="primary">{formatTime(filteredTotalSeconds)}</Badge>
+            </Inline>
+          )}
+        </Stack>
+      </Box>
+
       {view === 'summary' && (
-        <DynamicTable
-          head={summaryHead}
-          rows={summaryRows}
-          rowsPerPage={20}
-          defaultSortKey="time"
-          defaultSortOrder="DESC"
-          label="Work log summary per person"
-        />
+        filteredUserSummary.length === 0 ? (
+          <SectionMessage appearance="information">
+            <Text>No results match your search.</Text>
+          </SectionMessage>
+        ) : (
+          <DynamicTable
+            head={summaryHead}
+            rows={summaryRows}
+            rowsPerPage={20}
+            defaultSortKey="time"
+            defaultSortOrder="DESC"
+            label="Work log summary per person"
+          />
+        )
       )}
 
       {view === 'table' && (
-        <DynamicTable
-          head={entriesHead}
-          rows={entriesRows}
-          rowsPerPage={20}
-          defaultSortKey="date"
-          defaultSortOrder="DESC"
-          label="All work log entries"
-        />
+        filteredEntries.length === 0 ? (
+          <SectionMessage appearance="information">
+            <Text>No results match your search.</Text>
+          </SectionMessage>
+        ) : (
+          <DynamicTable
+            head={entriesHead}
+            rows={entriesRows}
+            rowsPerPage={20}
+            defaultSortKey="date"
+            defaultSortOrder="DESC"
+            label="All work log entries"
+          />
+        )
       )}
     </Stack>
   );

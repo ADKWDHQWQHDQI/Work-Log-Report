@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import ForgeReconciler, {
   Text,
   Heading,
@@ -10,6 +10,9 @@ import ForgeReconciler, {
   Spinner,
   Button,
   Lozenge,
+  Textfield,
+  Select,
+  Badge,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
 
@@ -27,12 +30,86 @@ function formatTime(seconds) {
   return parts.join(' ') || '0m';
 }
 
+// Search filter options
+const FILTER_OPTIONS = [
+  { label: 'All Fields', value: 'all' },
+  { label: 'Assignee', value: 'assignee' },
+  { label: 'Issue Key', value: 'issueKey' },
+  { label: 'Issue Type', value: 'issueType' },
+  { label: 'Sprint', value: 'sprint' },
+];
+
+// Generic search function — matches a query against an entry based on the selected filter
+function matchesSearch(entry, query, filterField) {
+  if (!query) return true;
+  const q = query.toLowerCase().trim();
+  if (!q) return true;
+
+  if (filterField === 'assignee') {
+    return (entry.author || '').toLowerCase().includes(q);
+  }
+  if (filterField === 'issueKey') {
+    return (entry.issueKey || entry.key || '').toLowerCase().includes(q);
+  }
+  if (filterField === 'issueType') {
+    return (entry.issueType || '').toLowerCase().includes(q);
+  }
+  if (filterField === 'sprint') {
+    return (entry.sprintName || '').toLowerCase().includes(q);
+  }
+  // 'all' — search across all fields
+  const fields = [
+    entry.author, entry.issueKey, entry.key, entry.issueSummary,
+    entry.summary, entry.issueType, entry.sprintName,
+    entry.issueStatus, entry.status, entry.comment,
+  ];
+  return fields.some((f) => f && String(f).toLowerCase().includes(q));
+}
+
+// For person view — match against user-level summary produced from filtered entries
+function matchesPersonSearch(user, query, filterField) {
+  if (!query) return true;
+  const q = query.toLowerCase().trim();
+  if (!q) return true;
+  if (filterField === 'assignee' || filterField === 'all') {
+    return (user.name || '').toLowerCase().includes(q);
+  }
+  // Other filters don't apply directly to person aggregation
+  return true;
+}
+
+// For issue view
+function matchesIssueSearch(issue, query, filterField) {
+  if (!query) return true;
+  const q = query.toLowerCase().trim();
+  if (!q) return true;
+
+  if (filterField === 'issueKey') {
+    return (issue.key || '').toLowerCase().includes(q);
+  }
+  if (filterField === 'issueType') {
+    return (issue.issueType || '').toLowerCase().includes(q);
+  }
+  if (filterField === 'sprint') {
+    return (issue.sprintName || '').toLowerCase().includes(q);
+  }
+  if (filterField === 'assignee') {
+    // Issue view doesn't have direct assignee, pass through
+    return true;
+  }
+  // 'all'
+  const fields = [issue.key, issue.summary, issue.status, issue.issueType, issue.sprintName];
+  return fields.some((f) => f && String(f).toLowerCase().includes(q));
+}
+
 const ProjectPage = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [period, setPeriod] = useState('all');
   const [view, setView] = useState('people');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterField, setFilterField] = useState('all');
 
   const fetchData = async (selectedPeriod) => {
     setLoading(true);
@@ -137,6 +214,43 @@ const ProjectPage = () => {
   const issueSummary = data.issueSummary || [];
   const projectKey = data.projectKey || '?';
 
+  // --- Filtered data based on search ---
+  const filteredEntries = useMemo(
+    () => entries.filter((e) => matchesSearch(e, searchQuery, filterField)),
+    [entries, searchQuery, filterField]
+  );
+
+  const filteredUserSummary = useMemo(() => {
+    if (!searchQuery || !searchQuery.trim()) return userSummary;
+    // If filtering by assignee, filter person rows directly
+    if (filterField === 'assignee' || filterField === 'all') {
+      return userSummary.filter((u) => matchesPersonSearch(u, searchQuery, filterField));
+    }
+    // For other filters (issueKey, issueType, sprint), re-aggregate from filtered entries
+    const userMap = {};
+    filteredEntries.forEach((entry) => {
+      if (!userMap[entry.authorId]) {
+        userMap[entry.authorId] = { name: entry.author, totalSeconds: 0, entryCount: 0 };
+      }
+      userMap[entry.authorId].totalSeconds += entry.timeSpentSeconds;
+      userMap[entry.authorId].entryCount += 1;
+    });
+    return Object.values(userMap).sort((a, b) => b.totalSeconds - a.totalSeconds);
+  }, [userSummary, filteredEntries, searchQuery, filterField]);
+
+  const filteredIssueSummary = useMemo(() => {
+    if (!searchQuery || !searchQuery.trim()) return issueSummary;
+    return issueSummary.filter((iss) => matchesIssueSearch(iss, searchQuery, filterField));
+  }, [issueSummary, searchQuery, filterField]);
+
+  // Compute filtered total for display
+  const filteredTotalSeconds = useMemo(
+    () => filteredEntries.reduce((sum, e) => sum + e.timeSpentSeconds, 0),
+    [filteredEntries]
+  );
+
+  const isFiltered = searchQuery && searchQuery.trim().length > 0;
+
   // --- DynamicTable definitions ---
 
   // "By Person" table
@@ -150,9 +264,10 @@ const ProjectPage = () => {
     ],
   };
 
-  const peopleRows = userSummary.map((user, index) => {
-    const pct = totalSeconds > 0
-      ? Math.round((user.totalSeconds / totalSeconds) * 100)
+  const baseTotalForPeople = isFiltered ? filteredTotalSeconds : totalSeconds;
+  const peopleRows = filteredUserSummary.map((user, index) => {
+    const pct = baseTotalForPeople > 0
+      ? Math.round((user.totalSeconds / baseTotalForPeople) * 100)
       : 0;
     return {
       key: `user-${index}`,
@@ -182,14 +297,16 @@ const ProjectPage = () => {
   const issuesHead = {
     cells: [
       { key: 'issue', content: 'Issue', isSortable: true },
+      { key: 'type', content: 'Type' },
       { key: 'summary', content: 'Summary' },
       { key: 'status', content: 'Status' },
+      { key: 'sprint', content: 'Sprint' },
       { key: 'time', content: 'Time Logged', isSortable: true },
       { key: 'entries', content: 'Entries', isSortable: true },
     ],
   };
 
-  const issuesRows = issueSummary.map((issue, index) => ({
+  const issuesRows = filteredIssueSummary.map((issue, index) => ({
     key: `issue-${index}`,
     cells: [
       {
@@ -198,6 +315,7 @@ const ProjectPage = () => {
           <Lozenge appearance="inprogress">{issue.key}</Lozenge>
         ),
       },
+      { key: 'type', content: issue.issueType || '—' },
       {
         key: 'summary',
         content:
@@ -211,6 +329,7 @@ const ProjectPage = () => {
           <Lozenge appearance="default">{issue.status}</Lozenge>
         ),
       },
+      { key: 'sprint', content: issue.sprintName || '—' },
       {
         key: 'time',
         content: (
@@ -225,14 +344,16 @@ const ProjectPage = () => {
   const detailsHead = {
     cells: [
       { key: 'issue', content: 'Issue', isSortable: true },
+      { key: 'type', content: 'Type', isSortable: true },
       { key: 'person', content: 'Person', isSortable: true },
+      { key: 'sprint', content: 'Sprint', isSortable: true },
       { key: 'date', content: 'Date', isSortable: true },
       { key: 'time', content: 'Time' },
       { key: 'comment', content: 'Comment' },
     ],
   };
 
-  const detailsRows = entries.slice(0, 100).map((entry, index) => ({
+  const detailsRows = filteredEntries.slice(0, 100).map((entry, index) => ({
     key: `entry-${index}`,
     cells: [
       {
@@ -241,7 +362,9 @@ const ProjectPage = () => {
           <Lozenge appearance="inprogress">{entry.issueKey}</Lozenge>
         ),
       },
+      { key: 'type', content: entry.issueType || '—' },
       { key: 'person', content: entry.author },
+      { key: 'sprint', content: entry.sprintName || '—' },
       { key: 'date', content: entry.date },
       {
         key: 'time',
@@ -259,6 +382,17 @@ const ProjectPage = () => {
       },
     ],
   }));
+
+  // Determine search placeholder based on selected filter
+  const searchPlaceholder = filterField === 'all'
+    ? 'Search across all fields...'
+    : filterField === 'assignee'
+      ? 'Search by person name...'
+      : filterField === 'issueKey'
+        ? 'Search by issue key (e.g. AI-16)...'
+        : filterField === 'issueType'
+          ? 'Search by issue type (e.g. Task, Bug, Story)...'
+          : 'Search by sprint name...';
 
   return (
     <Stack space="space.300">
@@ -331,48 +465,108 @@ const ProjectPage = () => {
         </Inline>
       </Stack>
 
+      {/* Search & Filter bar */}
+      <Box padding="space.100">
+        <Stack space="space.100">
+          <Inline space="space.100" alignBlock="center">
+            <Box>
+              <Select
+                appearance="default"
+                options={FILTER_OPTIONS}
+                value={FILTER_OPTIONS.find((o) => o.value === filterField)}
+                onChange={(option) => setFilterField(option.value)}
+                placeholder="Filter by..."
+                name="search-filter"
+              />
+            </Box>
+            <Box>
+              <Textfield
+                placeholder={searchPlaceholder}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                name="search-box"
+              />
+            </Box>
+            {isFiltered && (
+              <Button
+                appearance="subtle"
+                onClick={() => { setSearchQuery(''); setFilterField('all'); }}
+              >
+                Clear
+              </Button>
+            )}
+          </Inline>
+          {isFiltered && (
+            <Inline space="space.100">
+              <Text>
+                Showing {filteredEntries.length} of {entries.length} entries
+              </Text>
+              <Badge appearance="primary">{formatTime(filteredTotalSeconds)}</Badge>
+            </Inline>
+          )}
+        </Stack>
+      </Box>
+
       {view === 'people' && (
         <Stack space="space.100">
           <Heading as="h4">Time Logged Per Person</Heading>
-          <DynamicTable
-            head={peopleHead}
-            rows={peopleRows}
-            rowsPerPage={20}
-            defaultSortKey="time"
-            defaultSortOrder="DESC"
-            label="Time logged per person"
-          />
+          {filteredUserSummary.length === 0 ? (
+            <SectionMessage appearance="information">
+              <Text>No results match your search.</Text>
+            </SectionMessage>
+          ) : (
+            <DynamicTable
+              head={peopleHead}
+              rows={peopleRows}
+              rowsPerPage={20}
+              defaultSortKey="time"
+              defaultSortOrder="DESC"
+              label="Time logged per person"
+            />
+          )}
         </Stack>
       )}
 
       {view === 'issues' && (
         <Stack space="space.100">
           <Heading as="h4">Time Logged Per Issue</Heading>
-          <DynamicTable
-            head={issuesHead}
-            rows={issuesRows}
-            rowsPerPage={20}
-            defaultSortKey="time"
-            defaultSortOrder="DESC"
-            label="Time logged per issue"
-          />
+          {filteredIssueSummary.length === 0 ? (
+            <SectionMessage appearance="information">
+              <Text>No results match your search.</Text>
+            </SectionMessage>
+          ) : (
+            <DynamicTable
+              head={issuesHead}
+              rows={issuesRows}
+              rowsPerPage={20}
+              defaultSortKey="time"
+              defaultSortOrder="DESC"
+              label="Time logged per issue"
+            />
+          )}
         </Stack>
       )}
 
       {view === 'details' && (
         <Stack space="space.100">
           <Heading as="h4">All Work Log Entries</Heading>
-          <DynamicTable
-            head={detailsHead}
-            rows={detailsRows}
-            rowsPerPage={20}
-            defaultSortKey="date"
-            defaultSortOrder="DESC"
-            label="All work log entries"
-          />
-          {entries.length > 100 && (
+          {filteredEntries.length === 0 ? (
             <SectionMessage appearance="information">
-              <Text>Showing first 100 of {entries.length} entries.</Text>
+              <Text>No results match your search.</Text>
+            </SectionMessage>
+          ) : (
+            <DynamicTable
+              head={detailsHead}
+              rows={detailsRows}
+              rowsPerPage={20}
+              defaultSortKey="date"
+              defaultSortOrder="DESC"
+              label="All work log entries"
+            />
+          )}
+          {filteredEntries.length > 100 && (
+            <SectionMessage appearance="information">
+              <Text>Showing first 100 of {filteredEntries.length} entries.</Text>
             </SectionMessage>
           )}
         </Stack>
