@@ -285,15 +285,17 @@ resolver.define('prepareExport', async ({ payload }) => {
   }
 });
 
-export const handler = resolver.getDefinitions();
+const resolverHandler = resolver.getDefinitions();
 
 // Webtrigger handler: Serves CSV file download
-export async function csvExportHandler(request) {
+async function csvExportHandler(request) {
   try {
+    console.log('[CSV Export] Webtrigger invoked');
     const idParam = request.queryParameters?.id;
     const exportId = Array.isArray(idParam) ? idParam[0] : idParam;
 
     if (!exportId) {
+      console.log('[CSV Export] Missing export ID');
       return {
         body: 'Missing export ID. Please try exporting again.',
         headers: { 'Content-Type': ['text/plain'] },
@@ -302,8 +304,10 @@ export async function csvExportHandler(request) {
       };
     }
 
+    console.log('[CSV Export] Fetching CSV for key:', exportId);
     const csv = await storage.get(exportId);
     if (!csv) {
+      console.log('[CSV Export] Key not found in storage');
       return {
         body: 'Export not found or already downloaded. Please try exporting again.',
         headers: { 'Content-Type': ['text/plain'] },
@@ -314,6 +318,7 @@ export async function csvExportHandler(request) {
 
     // Clean up after retrieval
     await storage.delete(exportId);
+    console.log('[CSV Export] Success, returning CSV (' + csv.length + ' chars)');
 
     return {
       body: csv,
@@ -325,7 +330,7 @@ export async function csvExportHandler(request) {
       statusText: 'OK',
     };
   } catch (err) {
-    console.error('csvExportHandler error:', err);
+    console.error('[CSV Export] Handler error:', err);
     return {
       body: 'Export failed. Please try again.',
       headers: { 'Content-Type': ['text/plain'] },
@@ -334,3 +339,13 @@ export async function csvExportHandler(request) {
     };
   }
 }
+
+// Single unified handler: routes webtrigger requests vs resolver requests
+export const handler = async (event, context) => {
+  // Webtrigger events have an HTTP method property
+  if (event.method) {
+    return csvExportHandler(event);
+  }
+  // Otherwise delegate to the resolver
+  return resolverHandler(event, context);
+};

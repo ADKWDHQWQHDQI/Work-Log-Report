@@ -25,7 +25,7 @@ modules:
     - key: resolver
       handler: index.handler
     - key: csvExportFunction
-      handler: index.csvExportHandler
+      handler: index.handler
 resources:
   - key: main
     path: src/frontend/index.jsx

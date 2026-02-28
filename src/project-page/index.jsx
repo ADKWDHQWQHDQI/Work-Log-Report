@@ -13,6 +13,12 @@ import ForgeReconciler, {
   Textfield,
   Select,
   DatePicker,
+  Modal,
+  ModalBody,
+  ModalFooter,
+  ModalHeader,
+  ModalTitle,
+  ModalTransition,
   xcss,
 } from '@forge/react';
 import { invoke, router } from '@forge/bridge';
@@ -109,6 +115,7 @@ const ProjectPage = () => {
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [selectedIssueKey, setSelectedIssueKey] = useState(null);
 
   const fetchData = async (selectedPeriod, startOverride, endOverride) => {
     setLoading(true);
@@ -202,6 +209,39 @@ const ProjectPage = () => {
       return filteredEntries.reduce(function (sum, e) { return sum + (e.timeSpentSeconds || 0); }, 0);
     },
     [filteredEntries]
+  );
+
+  // Per-person breakdown for the selected issue (for the popup)
+  const selectedIssueData = useMemo(
+    function () {
+      if (!selectedIssueKey) return null;
+      // Find the issue summary info
+      var issueInfo = issueSummary.find(function (iss) { return iss.key === selectedIssueKey; });
+      if (!issueInfo) return null;
+      // Filter all entries for this issue
+      var issueEntries = entries.filter(function (e) { return e.issueKey === selectedIssueKey; });
+      // Aggregate by person
+      var personMap = {};
+      issueEntries.forEach(function (e) {
+        var pid = e.authorId || e.author;
+        if (!personMap[pid]) {
+          personMap[pid] = { name: e.author, totalSeconds: 0, entryCount: 0 };
+        }
+        personMap[pid].totalSeconds += e.timeSpentSeconds || 0;
+        personMap[pid].entryCount += 1;
+      });
+      var contributors = Object.values(personMap).sort(function (a, b) { return b.totalSeconds - a.totalSeconds; });
+      return {
+        key: issueInfo.key,
+        summary: issueInfo.summary,
+        issueType: issueInfo.issueType,
+        status: issueInfo.status,
+        totalSeconds: issueInfo.totalSeconds,
+        totalEntries: issueInfo.entryCount,
+        contributors: contributors,
+      };
+    },
+    [selectedIssueKey, entries, issueSummary]
   );
 
   var handleExport = async function () {
@@ -386,7 +426,12 @@ const ProjectPage = () => {
       {
         key: 'issue',
         content: (
-          <Lozenge appearance="inprogress">{issue.key}</Lozenge>
+          <Button
+            appearance="link"
+            onClick={function () { setSelectedIssueKey(issue.key); }}
+          >
+            {issue.key}
+          </Button>
         ),
       },
       { key: 'type', content: issue.issueType || '—' },
@@ -664,6 +709,72 @@ const ProjectPage = () => {
           )}
         </Stack>
       )}
+      <ModalTransition>
+        {selectedIssueData && (
+          <Modal onClose={function () { setSelectedIssueKey(null); }}>
+            <ModalHeader>
+              <ModalTitle>{selectedIssueData.key} — Contributors</ModalTitle>
+            </ModalHeader>
+            <ModalBody>
+              <Stack space="space.150">
+                <Text>{selectedIssueData.summary}</Text>
+                <Inline space="space.200">
+                  <Lozenge appearance="inprogress">{selectedIssueData.issueType || 'Issue'}</Lozenge>
+                  <Lozenge appearance="default">{selectedIssueData.status}</Lozenge>
+                  <Lozenge appearance="success" isBold>{formatTime(selectedIssueData.totalSeconds)} total</Lozenge>
+                  <Lozenge appearance="moved">{selectedIssueData.totalEntries} {selectedIssueData.totalEntries === 1 ? 'entry' : 'entries'}</Lozenge>
+                </Inline>
+                <DynamicTable
+                  head={{
+                    cells: [
+                      { key: 'num', content: '#' },
+                      { key: 'person', content: 'Person', isSortable: true },
+                      { key: 'time', content: 'Time Contributed', isSortable: true },
+                      { key: 'entries', content: 'Entries', isSortable: true },
+                      { key: 'share', content: '% Share', isSortable: true },
+                    ],
+                  }}
+                  rows={selectedIssueData.contributors.map(function (c, idx) {
+                    var pct = selectedIssueData.totalSeconds > 0
+                      ? Math.round((c.totalSeconds / selectedIssueData.totalSeconds) * 100)
+                      : 0;
+                    return {
+                      key: 'contrib-' + idx,
+                      cells: [
+                        { key: 'num', content: String(idx + 1) },
+                        { key: 'person', content: c.name },
+                        {
+                          key: 'time',
+                          content: (
+                            <Lozenge appearance="success">{formatTime(c.totalSeconds)}</Lozenge>
+                          ),
+                        },
+                        { key: 'entries', content: String(c.entryCount) },
+                        {
+                          key: 'share',
+                          content: (
+                            <Lozenge appearance={pct >= 30 ? 'success' : 'default'}>
+                              {pct}%
+                            </Lozenge>
+                          ),
+                        },
+                      ],
+                    };
+                  })}
+                  defaultSortKey="time"
+                  defaultSortOrder="DESC"
+                  label="Contributors for this issue"
+                />
+              </Stack>
+            </ModalBody>
+            <ModalFooter>
+              <Button appearance="primary" onClick={function () { setSelectedIssueKey(null); }}>
+                Close
+              </Button>
+            </ModalFooter>
+          </Modal>
+        )}
+      </ModalTransition>
     </Stack>
   );
 };
