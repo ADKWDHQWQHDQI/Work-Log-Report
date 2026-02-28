@@ -14,7 +14,7 @@ import ForgeReconciler, {
   Select,
   xcss,
 } from '@forge/react';
-import { invoke } from '@forge/bridge';
+import { invoke, router } from '@forge/bridge';
 
 function formatTime(seconds) {
   if (!seconds || seconds === 0) return '0m';
@@ -34,6 +34,15 @@ function getPercentageAppearance(percentage) {
   if (percentage >= 50) return 'success';
   if (percentage >= 25) return 'inprogress';
   return 'default';
+}
+
+function escapeCSV(str) {
+  if (!str) return '';
+  var s = String(str);
+  if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
 }
 
 const FILTER_OPTIONS = [
@@ -185,6 +194,24 @@ const App = () => {
     [filteredEntries]
   );
 
+  var handleExport = function () {
+    var issueKey = worklogs ? (worklogs.issueKey || '') : '';
+    var header = 'Issue Key,Person,Date,Time Logged,Time (seconds),Comment';
+    var rows = filteredEntries.map(function (e) {
+      return [
+        escapeCSV(issueKey), escapeCSV(e.author),
+        escapeCSV(e.date), escapeCSV(e.timeSpent),
+        String(e.timeSpentSeconds || 0), escapeCSV(e.comment),
+      ].join(',');
+    });
+    var csv = header + '\n' + rows.join('\n');
+    try {
+      router.open('data:text/csv;charset=utf-8,' + encodeURIComponent(csv));
+    } catch (err) {
+      console.error('Export failed:', err);
+    }
+  };
+
   // --- Now safe to do conditional rendering ---
 
   if (loading) {
@@ -325,6 +352,9 @@ const App = () => {
         </Button>
         <Button appearance="subtle" onClick={fetchWorklogs}>
           Refresh
+        </Button>
+        <Button appearance="default" onClick={handleExport}>
+          Export CSV
         </Button>
       </Inline>
 
