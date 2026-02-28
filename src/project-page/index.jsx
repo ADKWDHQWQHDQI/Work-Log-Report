@@ -116,6 +116,7 @@ const ProjectPage = () => {
   const [customEndDate, setCustomEndDate] = useState('');
   const [exporting, setExporting] = useState(false);
   const [selectedIssueKey, setSelectedIssueKey] = useState(null);
+  const [selectedPersonName, setSelectedPersonName] = useState(null);
 
   const fetchData = async (selectedPeriod, startOverride, endOverride) => {
     setLoading(true);
@@ -242,6 +243,59 @@ const ProjectPage = () => {
       };
     },
     [selectedIssueKey, entries, issueSummary]
+  );
+
+  // Issue count per person (for the "Issues" column in By Person view)
+  const personIssueCounts = useMemo(
+    function () {
+      var counts = {};
+      entries.forEach(function (e) {
+        var name = e.author;
+        if (!counts[name]) counts[name] = {};
+        if (e.issueKey) counts[name][e.issueKey] = true;
+      });
+      var result = {};
+      Object.keys(counts).forEach(function (name) {
+        result[name] = Object.keys(counts[name]).length;
+      });
+      return result;
+    },
+    [entries]
+  );
+
+  // Per-issue breakdown for the selected person (for the person popup)
+  const selectedPersonData = useMemo(
+    function () {
+      if (!selectedPersonName) return null;
+      var personEntries = entries.filter(function (e) { return e.author === selectedPersonName; });
+      if (personEntries.length === 0) return null;
+      var personTotalSeconds = personEntries.reduce(function (sum, e) { return sum + (e.timeSpentSeconds || 0); }, 0);
+      var issueMap = {};
+      personEntries.forEach(function (e) {
+        var key = e.issueKey;
+        if (!issueMap[key]) {
+          issueMap[key] = {
+            key: key,
+            summary: e.issueSummary || e.summary || '',
+            issueType: e.issueType || '',
+            status: e.issueStatus || e.status || '',
+            totalSeconds: 0,
+            entryCount: 0,
+          };
+        }
+        issueMap[key].totalSeconds += e.timeSpentSeconds || 0;
+        issueMap[key].entryCount += 1;
+      });
+      var issues = Object.values(issueMap).sort(function (a, b) { return b.totalSeconds - a.totalSeconds; });
+      return {
+        name: selectedPersonName,
+        totalSeconds: personTotalSeconds,
+        totalEntries: personEntries.length,
+        issueCount: issues.length,
+        issues: issues,
+      };
+    },
+    [selectedPersonName, entries]
   );
 
   var handleExport = async function () {
@@ -374,6 +428,7 @@ const ProjectPage = () => {
       { key: 'person', content: 'Person', isSortable: true },
       { key: 'time', content: 'Time Logged', isSortable: true },
       { key: 'entries', content: 'Entries', isSortable: true },
+      { key: 'issues', content: 'Issues', isSortable: true },
       { key: 'share', content: '% Share', isSortable: true },
     ],
   };
@@ -383,11 +438,22 @@ const ProjectPage = () => {
     const pct = baseTotalForPeople > 0
       ? Math.round((user.totalSeconds / baseTotalForPeople) * 100)
       : 0;
+    var issueCount = personIssueCounts[user.name] || 0;
     return {
       key: 'user-' + index,
       cells: [
         { key: 'num', content: String(index + 1) },
-        { key: 'person', content: user.name },
+        {
+          key: 'person',
+          content: (
+            <Button
+              appearance="link"
+              onClick={function () { setSelectedPersonName(user.name); }}
+            >
+              {user.name}
+            </Button>
+          ),
+        },
         {
           key: 'time',
           content: (
@@ -395,6 +461,12 @@ const ProjectPage = () => {
           ),
         },
         { key: 'entries', content: String(user.entryCount) },
+        {
+          key: 'issues',
+          content: (
+            <Lozenge appearance="inprogress">{String(issueCount)}</Lozenge>
+          ),
+        },
         {
           key: 'share',
           content: (
@@ -769,6 +841,91 @@ const ProjectPage = () => {
             </ModalBody>
             <ModalFooter>
               <Button appearance="primary" onClick={function () { setSelectedIssueKey(null); }}>
+                Close
+              </Button>
+            </ModalFooter>
+          </Modal>
+        )}
+      </ModalTransition>
+      <ModalTransition>
+        {selectedPersonData && (
+          <Modal onClose={function () { setSelectedPersonName(null); }} width="large">
+            <ModalHeader>
+              <ModalTitle>{selectedPersonData.name} — Issues Breakdown</ModalTitle>
+            </ModalHeader>
+            <ModalBody>
+              <Stack space="space.150">
+                <Inline space="space.200">
+                  <Lozenge appearance="success" isBold>{formatTime(selectedPersonData.totalSeconds)} total</Lozenge>
+                  <Lozenge appearance="inprogress">{selectedPersonData.issueCount} {selectedPersonData.issueCount === 1 ? 'issue' : 'issues'}</Lozenge>
+                  <Lozenge appearance="moved">{selectedPersonData.totalEntries} {selectedPersonData.totalEntries === 1 ? 'entry' : 'entries'}</Lozenge>
+                </Inline>
+                <DynamicTable
+                  head={{
+                    cells: [
+                      { key: 'num', content: '#' },
+                      { key: 'issue', content: 'Issue', isSortable: true },
+                      { key: 'type', content: 'Type' },
+                      { key: 'summary', content: 'Summary' },
+                      { key: 'status', content: 'Status' },
+                      { key: 'time', content: 'Time', isSortable: true },
+                      { key: 'entries', content: 'Entries', isSortable: true },
+                      { key: 'share', content: '% Share', isSortable: true },
+                    ],
+                  }}
+                  rows={selectedPersonData.issues.map(function (iss, idx) {
+                    var pct = selectedPersonData.totalSeconds > 0
+                      ? Math.round((iss.totalSeconds / selectedPersonData.totalSeconds) * 100)
+                      : 0;
+                    return {
+                      key: 'piss-' + idx,
+                      cells: [
+                        { key: 'num', content: String(idx + 1) },
+                        {
+                          key: 'issue',
+                          content: (
+                            <Lozenge appearance="inprogress">{iss.key}</Lozenge>
+                          ),
+                        },
+                        { key: 'type', content: iss.issueType || '—' },
+                        {
+                          key: 'summary',
+                          content: iss.summary.length > 40
+                            ? iss.summary.substring(0, 40) + '...'
+                            : iss.summary || '—',
+                        },
+                        {
+                          key: 'status',
+                          content: (
+                            <Lozenge appearance="default">{iss.status}</Lozenge>
+                          ),
+                        },
+                        {
+                          key: 'time',
+                          content: (
+                            <Lozenge appearance="success">{formatTime(iss.totalSeconds)}</Lozenge>
+                          ),
+                        },
+                        { key: 'entries', content: String(iss.entryCount) },
+                        {
+                          key: 'share',
+                          content: (
+                            <Lozenge appearance={pct >= 30 ? 'success' : 'default'}>
+                              {pct}%
+                            </Lozenge>
+                          ),
+                        },
+                      ],
+                    };
+                  })}
+                  defaultSortKey="time"
+                  defaultSortOrder="DESC"
+                  label="Issues for this person"
+                />
+              </Stack>
+            </ModalBody>
+            <ModalFooter>
+              <Button appearance="primary" onClick={function () { setSelectedPersonName(null); }}>
                 Close
               </Button>
             </ModalFooter>
