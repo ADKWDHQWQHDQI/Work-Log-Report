@@ -40,6 +40,7 @@ const FILTER_OPTIONS = [
   { label: 'All Fields', value: 'all' },
   { label: 'Person', value: 'person' },
   { label: 'Comment', value: 'comment' },
+  { label: 'Team', value: 'team' },
 ];
 
 const compactSelectStyles = xcss({ maxWidth: '120px' });
@@ -56,6 +57,7 @@ function matchesSearch(entry, query, filterField) {
   if (filterField === 'comment') {
     return (entry.comment || '').toLowerCase().includes(q);
   }
+  if (filterField === 'team') return true;
   const fields = [entry.author, entry.comment, entry.date, entry.timeSpent];
   return fields.some((f) => f && String(f).toLowerCase().includes(q));
 }
@@ -67,6 +69,11 @@ const App = () => {
   const [view, setView] = useState('summary');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterField, setFilterField] = useState('all');
+  const [groups, setGroups] = useState([]);
+  const [selectedGroup, setSelectedGroup] = useState(null);
+  const [groupMembers, setGroupMembers] = useState([]);
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  const [membersLoading, setMembersLoading] = useState(false);
 
   const fetchWorklogs = async () => {
     setLoading(true);
@@ -88,34 +95,87 @@ const App = () => {
     fetchWorklogs();
   }, []);
 
+  useEffect(function () {
+    if (filterField === 'team' && groups.length === 0) {
+      setGroupsLoading(true);
+      invoke('getGroups').then(function (result) {
+        if (result && result.groups) setGroups(result.groups);
+        setGroupsLoading(false);
+      }).catch(function () { setGroupsLoading(false); });
+    }
+    if (filterField !== 'team') {
+      setSelectedGroup(null);
+      setGroupMembers([]);
+    }
+  }, [filterField]);
+
+  useEffect(function () {
+    if (selectedGroup) {
+      setMembersLoading(true);
+      invoke('getGroupMembers', { groupId: selectedGroup }).then(function (result) {
+        if (result && result.members) setGroupMembers(result.members);
+        else setGroupMembers([]);
+        setMembersLoading(false);
+      }).catch(function () { setGroupMembers([]); setMembersLoading(false); });
+    } else {
+      setGroupMembers([]);
+    }
+  }, [selectedGroup]);
+
   // Extract data safely (works even when worklogs is null)
   const entries = worklogs && worklogs.entries ? worklogs.entries : [];
   const totalSeconds = worklogs ? (worklogs.totalSeconds || 0) : 0;
   const userSummary = worklogs ? (worklogs.userSummary || []) : [];
 
   // ALL useMemo hooks MUST be called unconditionally (before any return)
+  const teamMemberIds = useMemo(
+    function () {
+      if (filterField !== 'team' || !selectedGroup || groupMembers.length === 0) return null;
+      var ids = {};
+      groupMembers.forEach(function (m) { ids[m.accountId] = true; });
+      return ids;
+    },
+    [filterField, selectedGroup, groupMembers]
+  );
+
   const filteredEntries = useMemo(
     function () {
-      return entries.filter(function (e) { return matchesSearch(e, searchQuery, filterField); });
+      var result = entries;
+      if (teamMemberIds) {
+        result = result.filter(function (e) { return !!teamMemberIds[e.authorId]; });
+      }
+      return result.filter(function (e) { return matchesSearch(e, searchQuery, filterField); });
     },
-    [entries, searchQuery, filterField]
+    [entries, searchQuery, filterField, teamMemberIds]
   );
 
   const filteredUserSummary = useMemo(
     function () {
+      if (filterField === 'team' && teamMemberIds) {
+        var userMap = {};
+        filteredEntries.forEach(function (entry) {
+          var key = entry.authorId || entry.author;
+          if (!userMap[key]) {
+            userMap[key] = { name: entry.author, totalSeconds: 0, entryCount: 0 };
+          }
+          userMap[key].totalSeconds += entry.timeSpentSeconds;
+          userMap[key].entryCount += 1;
+        });
+        return Object.values(userMap).sort(function (a, b) { return b.totalSeconds - a.totalSeconds; });
+      }
       if (!searchQuery || !searchQuery.trim()) return userSummary;
-      var userMap = {};
+      var userMap2 = {};
       filteredEntries.forEach(function (entry) {
         var key = entry.authorId || entry.author;
-        if (!userMap[key]) {
-          userMap[key] = { name: entry.author, totalSeconds: 0, entryCount: 0 };
+        if (!userMap2[key]) {
+          userMap2[key] = { name: entry.author, totalSeconds: 0, entryCount: 0 };
         }
-        userMap[key].totalSeconds += entry.timeSpentSeconds;
-        userMap[key].entryCount += 1;
+        userMap2[key].totalSeconds += entry.timeSpentSeconds;
+        userMap2[key].entryCount += 1;
       });
-      return Object.values(userMap).sort(function (a, b) { return b.totalSeconds - a.totalSeconds; });
+      return Object.values(userMap2).sort(function (a, b) { return b.totalSeconds - a.totalSeconds; });
     },
-    [userSummary, filteredEntries, searchQuery, filterField]
+    [userSummary, filteredEntries, searchQuery, filterField, teamMemberIds]
   );
 
   const filteredTotalSeconds = useMemo(
@@ -159,7 +219,8 @@ const App = () => {
     );
   }
 
-  const isFiltered = searchQuery && searchQuery.trim().length > 0;
+  const isFiltered = (filterField === 'team' && selectedGroup) ||
+                     (filterField !== 'team' && searchQuery && searchQuery.trim().length > 0);
 
   // DynamicTable head/rows for the "Per Person" summary view
   const summaryHead = {
@@ -228,6 +289,9 @@ const App = () => {
   var searchPlaceholder = 'Search across all fields...';
   if (filterField === 'person') searchPlaceholder = 'Search by person name...';
   else if (filterField === 'comment') searchPlaceholder = 'Search by comment text...';
+  else if (filterField === 'team') searchPlaceholder = 'Select a team...';
+
+  var groupOptions = groups.map(function (g) { return { label: g.name, value: g.groupId }; });
 
   return (
     <Stack space="space.200">
@@ -284,18 +348,37 @@ const App = () => {
               name="search-filter"
             />
           </Box>
-          <Box xcss={compactFieldStyles}>
-            <Textfield
-              placeholder={searchPlaceholder}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              name="search-box"
-            />
-          </Box>
+          {filterField === 'team' ? (
+            <Box xcss={compactFieldStyles}>
+              {groupsLoading ? (
+                <Spinner size="small" />
+              ) : (
+                <Select
+                  options={groupOptions}
+                  value={groupOptions.find(function (o) { return o.value === selectedGroup; })}
+                  onChange={function (option) { setSelectedGroup(option ? option.value : null); }}
+                  placeholder="Select team..."
+                  name="team-select"
+                />
+              )}
+            </Box>
+          ) : (
+            <Box xcss={compactFieldStyles}>
+              <Textfield
+                placeholder={searchPlaceholder}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                name="search-box"
+              />
+            </Box>
+          )}
+          {membersLoading && filterField === 'team' && (
+            <Spinner size="small" />
+          )}
           {isFiltered && (
             <Button
               appearance="subtle"
-              onClick={() => { setSearchQuery(''); setFilterField('all'); }}
+              onClick={() => { setSearchQuery(''); setFilterField('all'); setSelectedGroup(null); }}
             >
               Clear
             </Button>

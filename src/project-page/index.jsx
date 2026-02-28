@@ -37,6 +37,7 @@ const FILTER_OPTIONS = [
   { label: 'Issue Key', value: 'issueKey' },
   { label: 'Issue Type', value: 'issueType' },
   { label: 'Sprint', value: 'sprint' },
+  { label: 'Team', value: 'team' },
 ];
 
 const compactSelectStyles = xcss({ maxWidth: '120px' });
@@ -59,6 +60,7 @@ function matchesSearch(entry, query, filterField) {
   if (filterField === 'sprint') {
     return (entry.sprintName || '').toLowerCase().includes(q);
   }
+  if (filterField === 'team') return true;
   const fields = [
     entry.author, entry.issueKey, entry.key, entry.issueSummary,
     entry.summary, entry.issueType, entry.sprintName,
@@ -84,6 +86,7 @@ function matchesIssueSearch(issue, query, filterField) {
   if (filterField === 'assignee') {
     return true;
   }
+  if (filterField === 'team') return true;
   const fields = [issue.key, issue.summary, issue.status, issue.issueType, issue.sprintName];
   return fields.some((f) => f && String(f).toLowerCase().includes(q));
 }
@@ -96,6 +99,14 @@ const ProjectPage = () => {
   const [view, setView] = useState('people');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterField, setFilterField] = useState('all');
+  const [groups, setGroups] = useState([]);
+  const [selectedGroup, setSelectedGroup] = useState(null);
+  const [groupMembers, setGroupMembers] = useState([]);
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [crossProjectUser, setCrossProjectUser] = useState(null);
+  const [crossProjectData, setCrossProjectData] = useState(null);
+  const [crossProjectLoading, setCrossProjectLoading] = useState(false);
 
   const fetchData = async (selectedPeriod) => {
     setLoading(true);
@@ -125,6 +136,50 @@ const ProjectPage = () => {
     fetchData('all');
   }, []);
 
+  useEffect(function () {
+    if (filterField === 'team' && groups.length === 0) {
+      setGroupsLoading(true);
+      invoke('getGroups').then(function (result) {
+        if (result && result.groups) setGroups(result.groups);
+        setGroupsLoading(false);
+      }).catch(function () { setGroupsLoading(false); });
+    }
+    if (filterField !== 'team') {
+      setSelectedGroup(null);
+      setGroupMembers([]);
+    }
+  }, [filterField]);
+
+  useEffect(function () {
+    if (selectedGroup) {
+      setMembersLoading(true);
+      invoke('getGroupMembers', { groupId: selectedGroup }).then(function (result) {
+        if (result && result.members) setGroupMembers(result.members);
+        else setGroupMembers([]);
+        setMembersLoading(false);
+      }).catch(function () { setGroupMembers([]); setMembersLoading(false); });
+    } else {
+      setGroupMembers([]);
+    }
+  }, [selectedGroup]);
+
+  useEffect(function () {
+    if (view === 'crossProject' && crossProjectUser) {
+      setCrossProjectLoading(true);
+      invoke('getUserWorklogsGlobal', {
+        accountId: crossProjectUser.accountId,
+        userName: crossProjectUser.name,
+        period: period,
+      }).then(function (result) {
+        setCrossProjectData(result);
+        setCrossProjectLoading(false);
+      }).catch(function () {
+        setCrossProjectData({ error: 'Failed to fetch data.' });
+        setCrossProjectLoading(false);
+      });
+    }
+  }, [view, crossProjectUser, period]);
+
   // Extract data (safe even when data is null)
   const entries = data && data.entries ? data.entries : [];
   const totalSeconds = data ? (data.totalSeconds || 0) : 0;
@@ -134,15 +189,41 @@ const ProjectPage = () => {
   const hasEntries = entries.length > 0;
 
   // ALL useMemo hooks MUST be called unconditionally (before any return)
+  const teamMemberIds = useMemo(
+    function () {
+      if (filterField !== 'team' || !selectedGroup || groupMembers.length === 0) return null;
+      var ids = {};
+      groupMembers.forEach(function (m) { ids[m.accountId] = true; });
+      return ids;
+    },
+    [filterField, selectedGroup, groupMembers]
+  );
+
   const filteredEntries = useMemo(
     function () {
-      return entries.filter(function (e) { return matchesSearch(e, searchQuery, filterField); });
+      var result = entries;
+      if (teamMemberIds) {
+        result = result.filter(function (e) { return !!teamMemberIds[e.authorId]; });
+      }
+      return result.filter(function (e) { return matchesSearch(e, searchQuery, filterField); });
     },
-    [entries, searchQuery, filterField]
+    [entries, searchQuery, filterField, teamMemberIds]
   );
 
   const filteredUserSummary = useMemo(
     function () {
+      if (filterField === 'team' && teamMemberIds) {
+        var userMap = {};
+        filteredEntries.forEach(function (entry) {
+          var key = entry.authorId || entry.author;
+          if (!userMap[key]) {
+            userMap[key] = { accountId: entry.authorId, name: entry.author, totalSeconds: 0, entryCount: 0 };
+          }
+          userMap[key].totalSeconds += entry.timeSpentSeconds;
+          userMap[key].entryCount += 1;
+        });
+        return Object.values(userMap).sort(function (a, b) { return b.totalSeconds - a.totalSeconds; });
+      }
       if (!searchQuery || !searchQuery.trim()) return userSummary;
       if (filterField === 'assignee' || filterField === 'all') {
         return userSummary.filter(function (u) {
@@ -150,26 +231,46 @@ const ProjectPage = () => {
           return (u.name || '').toLowerCase().includes(q);
         });
       }
-      var userMap = {};
+      var userMap2 = {};
       filteredEntries.forEach(function (entry) {
         var key = entry.authorId || entry.author;
-        if (!userMap[key]) {
-          userMap[key] = { name: entry.author, totalSeconds: 0, entryCount: 0 };
+        if (!userMap2[key]) {
+          userMap2[key] = { accountId: entry.authorId, name: entry.author, totalSeconds: 0, entryCount: 0 };
         }
-        userMap[key].totalSeconds += entry.timeSpentSeconds;
-        userMap[key].entryCount += 1;
+        userMap2[key].totalSeconds += entry.timeSpentSeconds;
+        userMap2[key].entryCount += 1;
       });
-      return Object.values(userMap).sort(function (a, b) { return b.totalSeconds - a.totalSeconds; });
+      return Object.values(userMap2).sort(function (a, b) { return b.totalSeconds - a.totalSeconds; });
     },
-    [userSummary, filteredEntries, searchQuery, filterField]
+    [userSummary, filteredEntries, searchQuery, filterField, teamMemberIds]
   );
 
   const filteredIssueSummary = useMemo(
     function () {
+      if (filterField === 'team' && teamMemberIds) {
+        var issMap = {};
+        filteredEntries.forEach(function (entry) {
+          var key = entry.issueKey;
+          if (!issMap[key]) {
+            issMap[key] = {
+              key: key,
+              summary: entry.issueSummary || entry.summary || key,
+              status: entry.issueStatus || entry.status || 'Unknown',
+              issueType: entry.issueType || 'Unknown',
+              sprintName: entry.sprintName || '',
+              totalSeconds: 0,
+              entryCount: 0,
+            };
+          }
+          issMap[key].totalSeconds += entry.timeSpentSeconds || 0;
+          issMap[key].entryCount += 1;
+        });
+        return Object.values(issMap).sort(function (a, b) { return b.totalSeconds - a.totalSeconds; });
+      }
       if (!searchQuery || !searchQuery.trim()) return issueSummary;
       return issueSummary.filter(function (iss) { return matchesIssueSearch(iss, searchQuery, filterField); });
     },
-    [issueSummary, searchQuery, filterField]
+    [issueSummary, filteredEntries, searchQuery, filterField, teamMemberIds]
   );
 
   const filteredTotalSeconds = useMemo(
@@ -248,7 +349,8 @@ const ProjectPage = () => {
     );
   }
 
-  const isFiltered = searchQuery && searchQuery.trim().length > 0;
+  const isFiltered = (filterField === 'team' && selectedGroup) ||
+                     (filterField !== 'team' && searchQuery && searchQuery.trim().length > 0);
 
   // "By Person" table
   const peopleHead = {
@@ -385,6 +487,10 @@ const ProjectPage = () => {
   else if (filterField === 'issueKey') searchPlaceholder = 'Search by issue key (e.g. AI-16)...';
   else if (filterField === 'issueType') searchPlaceholder = 'Search by issue type (e.g. Task, Bug)...';
   else if (filterField === 'sprint') searchPlaceholder = 'Search by sprint name...';
+  else if (filterField === 'team') searchPlaceholder = 'Select a team...';
+
+  var groupOptions = groups.map(function (g) { return { label: g.name, value: g.groupId }; });
+  var userOptions = userSummary.map(function (u) { return { label: u.name, value: u.accountId }; });
 
   return (
     <Stack space="space.300">
@@ -451,6 +557,12 @@ const ProjectPage = () => {
           >
             All Entries
           </Button>
+          <Button
+            appearance={view === 'crossProject' ? 'primary' : 'default'}
+            onClick={() => setView('crossProject')}
+          >
+            User Global
+          </Button>
           <Button appearance="subtle" onClick={() => fetchData()}>
             Refresh
           </Button>
@@ -460,40 +572,61 @@ const ProjectPage = () => {
       <Inline spread="space-between" alignBlock="center">
         <Stack space="space.050">
           <Heading as="h4">
-            {view === 'people' ? 'Time Logged Per Person' : view === 'issues' ? 'Time Logged Per Issue' : 'All Work Log Entries'}
+            {view === 'people' ? 'Time Logged Per Person' : view === 'issues' ? 'Time Logged Per Issue' : view === 'crossProject' ? 'User Worklogs Across Projects' : 'All Work Log Entries'}
           </Heading>
           {isFiltered && (
             <Text>Showing {filteredEntries.length} of {entries.length} entries ({formatTime(filteredTotalSeconds)})</Text>
           )}
         </Stack>
-        <Inline space="space.050" alignBlock="center">
-          <Box xcss={compactSelectStyles}>
-            <Select
-              appearance="default"
-              options={FILTER_OPTIONS}
-              value={FILTER_OPTIONS.find((o) => o.value === filterField)}
-              onChange={(option) => setFilterField(option.value)}
-              placeholder="Filter by..."
-              name="search-filter"
-            />
-          </Box>
-          <Box xcss={compactFieldStyles}>
-            <Textfield
-              placeholder={searchPlaceholder}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              name="search-box"
-            />
-          </Box>
-          {isFiltered && (
-            <Button
-              appearance="subtle"
-              onClick={() => { setSearchQuery(''); setFilterField('all'); }}
-            >
-              Clear
-            </Button>
-          )}
-        </Inline>
+        {view !== 'crossProject' && (
+          <Inline space="space.050" alignBlock="center">
+            <Box xcss={compactSelectStyles}>
+              <Select
+                appearance="default"
+                options={FILTER_OPTIONS}
+                value={FILTER_OPTIONS.find((o) => o.value === filterField)}
+                onChange={(option) => setFilterField(option.value)}
+                placeholder="Filter by..."
+                name="search-filter"
+              />
+            </Box>
+            {filterField === 'team' ? (
+              <Box xcss={compactFieldStyles}>
+                {groupsLoading ? (
+                  <Spinner size="small" />
+                ) : (
+                  <Select
+                    options={groupOptions}
+                    value={groupOptions.find(function (o) { return o.value === selectedGroup; })}
+                    onChange={function (option) { setSelectedGroup(option ? option.value : null); }}
+                    placeholder="Select team..."
+                    name="team-select"
+                  />
+                )}
+              </Box>
+            ) : (
+              <Box xcss={compactFieldStyles}>
+                <Textfield
+                  placeholder={searchPlaceholder}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  name="search-box"
+                />
+              </Box>
+            )}
+            {membersLoading && filterField === 'team' && (
+              <Spinner size="small" />
+            )}
+            {isFiltered && (
+              <Button
+                appearance="subtle"
+                onClick={() => { setSearchQuery(''); setFilterField('all'); setSelectedGroup(null); }}
+              >
+                Clear
+              </Button>
+            )}
+          </Inline>
+        )}
       </Inline>
 
       {view === 'people' && (
@@ -554,6 +687,103 @@ const ProjectPage = () => {
             <SectionMessage appearance="information">
               <Text>Showing first 100 of {filteredEntries.length} entries.</Text>
             </SectionMessage>
+          )}
+        </Stack>
+      )}
+
+      {view === 'crossProject' && (
+        <Stack space="space.200">
+          <Box padding="space.100">
+            <Inline space="space.100" alignBlock="center">
+              <Text>Select a person:</Text>
+              <Box>
+                <Select
+                  options={userOptions}
+                  value={crossProjectUser ? { label: crossProjectUser.name, value: crossProjectUser.accountId } : null}
+                  onChange={function (option) {
+                    if (option) {
+                      setCrossProjectUser({ accountId: option.value, name: option.label });
+                    } else {
+                      setCrossProjectUser(null);
+                      setCrossProjectData(null);
+                    }
+                  }}
+                  placeholder="Choose person..."
+                  name="user-global-select"
+                />
+              </Box>
+            </Inline>
+          </Box>
+
+          {!crossProjectUser && (
+            <SectionMessage appearance="information">
+              <Text>Select a person from the dropdown to view their work logs across all projects.</Text>
+            </SectionMessage>
+          )}
+
+          {crossProjectUser && crossProjectLoading && (
+            <Stack space="space.200" alignInline="center">
+              <Spinner size="large" />
+              <Text>Searching across all projects for {crossProjectUser.name}...</Text>
+            </Stack>
+          )}
+
+          {crossProjectUser && !crossProjectLoading && crossProjectData && crossProjectData.error && (
+            <SectionMessage appearance="error">
+              <Text>{crossProjectData.error}</Text>
+            </SectionMessage>
+          )}
+
+          {crossProjectUser && !crossProjectLoading && crossProjectData && !crossProjectData.error && (
+            <Stack space="space.100">
+              <Inline space="space.200">
+                <Lozenge appearance="success" isBold>{formatTime(crossProjectData.totalSeconds)} total</Lozenge>
+                <Lozenge appearance="inprogress">{(crossProjectData.projects || []).length} projects</Lozenge>
+                <Lozenge appearance="default">{(crossProjectData.entries || []).length} entries</Lozenge>
+              </Inline>
+              {(crossProjectData.entries || []).length === 0 ? (
+                <SectionMessage appearance="information">
+                  <Text>No work logs found for {crossProjectUser.name} in the selected period.</Text>
+                </SectionMessage>
+              ) : (
+                <DynamicTable
+                  head={{
+                    cells: [
+                      { key: 'project', content: 'Project', isSortable: true },
+                      { key: 'issue', content: 'Issue', isSortable: true },
+                      { key: 'type', content: 'Type' },
+                      { key: 'sprint', content: 'Sprint' },
+                      { key: 'date', content: 'Date', isSortable: true },
+                      { key: 'time', content: 'Time' },
+                      { key: 'comment', content: 'Comment' },
+                    ],
+                  }}
+                  rows={(crossProjectData.entries || []).slice(0, 100).map(function (entry, index) {
+                    return {
+                      key: 'cp-' + index,
+                      cells: [
+                        { key: 'project', content: entry.projectKey || '—' },
+                        { key: 'issue', content: <Lozenge appearance="inprogress">{entry.issueKey}</Lozenge> },
+                        { key: 'type', content: entry.issueType || '—' },
+                        { key: 'sprint', content: entry.sprintName || '—' },
+                        { key: 'date', content: entry.date },
+                        { key: 'time', content: <Lozenge appearance="success">{entry.timeSpent}</Lozenge> },
+                        { key: 'comment', content: entry.comment ? (entry.comment.length > 40 ? entry.comment.substring(0, 40) + '...' : entry.comment) : '—' },
+                      ],
+                    };
+                  })}
+                  rowsPerPage={20}
+                  defaultSortKey="date"
+                  defaultSortOrder="DESC"
+                  label="User work logs across all projects"
+                />
+              )}
+              {(crossProjectData.entries || []).length > 100 && (
+                <SectionMessage appearance="information">
+                  <Text>Showing first 100 of {crossProjectData.entries.length} entries.</Text>
+                </SectionMessage>
+              )}
+            </Stack>
           )}
         </Stack>
       )}

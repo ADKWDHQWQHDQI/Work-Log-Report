@@ -79,6 +79,7 @@ function aggregateByUser(entries) {
   entries.forEach((entry) => {
     if (!userMap[entry.authorId]) {
       userMap[entry.authorId] = {
+        accountId: entry.authorId,
         name: entry.author,
         totalSeconds: 0,
         entryCount: 0,
@@ -252,6 +253,173 @@ resolver.define('getProjectWorklogs', async ({ context, payload }) => {
   } catch (err) {
     console.error('Unexpected error in getProjectWorklogs:', err);
     return { error: 'An unexpected error occurred. Please try again.' };
+  }
+});
+
+// Resolver 3: Get Jira groups for team filter
+resolver.define('getGroups', async () => {
+  try {
+    const response = await api.asApp().requestJira(
+      route`/rest/api/3/groups/picker?maxResults=100`,
+      { headers: { 'Accept': 'application/json' } }
+    );
+    if (!response.ok) {
+      console.error(`Groups API error: ${response.status}`);
+      return { error: `Failed to fetch groups (${response.status})` };
+    }
+    const data = await safeJson(response);
+    if (!data) return { error: 'Failed to parse groups.' };
+    const groups = (data.groups || []).map(g => ({ name: g.name, groupId: g.groupId }));
+    return { groups };
+  } catch (err) {
+    console.error('Error fetching groups:', err);
+    return { error: 'Failed to fetch groups.' };
+  }
+});
+
+// Resolver 4: Get members of a specific group
+resolver.define('getGroupMembers', async ({ payload }) => {
+  try {
+    const groupId = payload?.groupId;
+    if (!groupId) return { error: 'No group ID provided.' };
+
+    const allMembers = [];
+    let startAt = 0;
+    for (let page = 0; page < 10; page++) {
+      const response = await api.asApp().requestJira(
+        route`/rest/api/3/group/member?groupId=${groupId}&startAt=${String(startAt)}&maxResults=50`,
+        { headers: { 'Accept': 'application/json' } }
+      );
+      if (!response.ok) break;
+      const data = await safeJson(response);
+      if (!data) break;
+      const values = data.values || [];
+      allMembers.push(...values.map(m => ({ accountId: m.accountId, displayName: m.displayName })));
+      if (allMembers.length >= (data.total || 0) || values.length === 0) break;
+      startAt += values.length;
+    }
+    return { members: allMembers };
+  } catch (err) {
+    console.error('Error fetching group members:', err);
+    return { error: 'Failed to fetch group members.' };
+  }
+});
+
+// Resolver 5: Get worklogs for a specific user across ALL projects
+resolver.define('getUserWorklogsGlobal', async ({ payload }) => {
+  try {
+    const accountId = payload?.accountId;
+    const userName = payload?.userName || 'User';
+    const period = payload?.period || 'all';
+
+    if (!accountId) return { error: 'No user specified.' };
+
+    const now = new Date();
+    let startDate;
+    if (period === 'week') {
+      startDate = new Date(now);
+      startDate.setDate(startDate.getDate() - 7);
+    } else if (period === 'month') {
+      startDate = new Date(now);
+      startDate.setMonth(startDate.getMonth() - 1);
+    } else {
+      startDate = new Date('2000-01-01');
+    }
+
+    const jql = `worklogAuthor = "${accountId}" AND worklogDate >= "${formatDateForJQL(startDate)}" ORDER BY updated DESC`;
+    console.log(`[WorkLog] Cross-project search JQL: ${jql}`);
+
+    const searchResponse = await api.asApp().requestJira(
+      route`/rest/api/3/search/jql?jql=${jql}&maxResults=${String(MAX_ISSUES_TO_SCAN)}&fields=summary,status,issuetype,sprint,project`,
+      { headers: { 'Accept': 'application/json' } }
+    );
+
+    if (!searchResponse.ok) {
+      const errorText = await searchResponse.text().catch(() => '');
+      console.error(`[WorkLog] Cross-project search error: ${searchResponse.status}, ${errorText}`);
+      return { error: `Search failed (${searchResponse.status}). ${errorText}` };
+    }
+
+    const searchData = await safeJson(searchResponse);
+    if (!searchData) return { error: 'Failed to parse search results.' };
+
+    const issues = searchData.issues || [];
+    const allEntries = [];
+    const issueSummaryMap = {};
+    const projectsFound = {};
+
+    for (let i = 0; i < issues.length; i += PARALLEL_BATCH_SIZE) {
+      const batch = issues.slice(i, i + PARALLEL_BATCH_SIZE);
+      const batchResults = await Promise.all(
+        batch.map(async (issue) => {
+          const issueKey = issue.key;
+          const issueSummary = issue.fields?.summary || issueKey;
+          const issueStatus = issue.fields?.status?.name || 'Unknown';
+          const issueType = issue.fields?.issuetype?.name || 'Unknown';
+          const sprintName = getSprintName(issue.fields?.sprint);
+          const pKey = issue.fields?.project?.key || '';
+          const pName = issue.fields?.project?.name || pKey;
+
+          try {
+            const worklogs = await fetchAllWorklogsForIssue(issueKey);
+            const filteredLogs = worklogs.filter((log) => {
+              if (log.author?.accountId !== accountId) return false;
+              const logDate = new Date(log.started);
+              return logDate >= startDate && logDate <= now;
+            });
+            return { issueKey, issueSummary, issueStatus, issueType, sprintName, pKey, pName, filteredLogs };
+          } catch (err) {
+            return { issueKey, issueSummary, issueStatus, issueType, sprintName, pKey, pName, filteredLogs: [] };
+          }
+        })
+      );
+
+      for (const { issueKey, issueSummary, issueStatus, issueType, sprintName, pKey, pName, filteredLogs } of batchResults) {
+        if (pKey) projectsFound[pKey] = pName;
+        let issueTotal = 0;
+        filteredLogs.forEach((log) => {
+          const entry = processWorklogEntry(log, {
+            issueKey, issueSummary, issueStatus, issueType, sprintName,
+            projectKey: pKey, projectName: pName,
+          });
+          allEntries.push(entry);
+          issueTotal += log.timeSpentSeconds || 0;
+        });
+        if (filteredLogs.length > 0) {
+          issueSummaryMap[issueKey] = {
+            key: issueKey,
+            summary: issueSummary,
+            status: issueStatus,
+            issueType,
+            sprintName,
+            projectKey: pKey,
+            projectName: pName,
+            totalSeconds: issueTotal,
+            entryCount: filteredLogs.length,
+          };
+        }
+      }
+    }
+
+    allEntries.sort((a, b) => new Date(b.dateRaw) - new Date(a.dateRaw));
+    const totalSeconds = allEntries.reduce((sum, e) => sum + e.timeSpentSeconds, 0);
+    const issueSummary = Object.values(issueSummaryMap).sort((a, b) => b.totalSeconds - a.totalSeconds);
+
+    console.log(`[WorkLog] Cross-project result: ${allEntries.length} entries, ${Object.keys(projectsFound).length} projects`);
+
+    return {
+      entries: allEntries,
+      totalSeconds,
+      issueSummary,
+      userName,
+      accountId,
+      period,
+      projects: Object.keys(projectsFound),
+      issueCount: issues.length,
+    };
+  } catch (err) {
+    console.error('Error in getUserWorklogsGlobal:', err);
+    return { error: 'An unexpected error occurred.' };
   }
 });
 
