@@ -79,6 +79,7 @@ function aggregateByUser(entries) {
   entries.forEach((entry) => {
     if (!userMap[entry.authorId]) {
       userMap[entry.authorId] = {
+        accountId: entry.authorId,
         name: entry.author,
         totalSeconds: 0,
         entryCount: 0,
@@ -258,10 +259,159 @@ resolver.define('getProjectWorklogs', async ({ context, payload }) => {
       period,
       projectKey,
       issueCount: issues.length,
+      periodStart: formatDateForJQL(startDate),
+      periodEnd: formatDateForJQL(endDate),
     };
   } catch (err) {
     console.error('Unexpected error in getProjectWorklogs:', err);
     return { error: 'An unexpected error occurred. Please try again.' };
+  }
+});
+
+// Helper: storage key functions for period locking and timesheet approval
+function getLockKey(projectKey, periodStart, periodEnd) {
+  return 'lock:' + projectKey + ':' + periodStart + '_' + periodEnd;
+}
+
+function getSubsKey(projectKey, periodStart, periodEnd) {
+  return 'subs:' + projectKey + ':' + periodStart + '_' + periodEnd;
+}
+
+// Get current user info
+resolver.define('getCurrentUser', async ({ context }) => {
+  try {
+    const accountId = context.accountId;
+    if (!accountId) return { error: 'No account ID available' };
+    const response = await api.asApp().requestJira(
+      route`/rest/api/3/user?accountId=${accountId}`,
+      { headers: { 'Accept': 'application/json' } }
+    );
+    if (!response.ok) return { accountId, displayName: 'Unknown User' };
+    const user = await safeJson(response);
+    return { accountId, displayName: user?.displayName || 'Unknown User' };
+  } catch (err) {
+    console.error('getCurrentUser error:', err);
+    return { error: 'Failed to get current user info' };
+  }
+});
+
+// Get period lock status + all submission statuses
+resolver.define('getPeriodStatus', async ({ context, payload }) => {
+  try {
+    const projectKey = context.extension.project.key;
+    const { periodStart, periodEnd } = payload || {};
+    if (!periodStart || !periodEnd) return { lock: null, submissions: {} };
+    const lockKey = getLockKey(projectKey, periodStart, periodEnd);
+    const subsKey = getSubsKey(projectKey, periodStart, periodEnd);
+    const [lock, submissions] = await Promise.all([
+      storage.get(lockKey),
+      storage.get(subsKey),
+    ]);
+    return { lock: lock || null, submissions: submissions || {} };
+  } catch (err) {
+    console.error('getPeriodStatus error:', err);
+    return { lock: null, submissions: {} };
+  }
+});
+
+// Lock a period
+resolver.define('lockPeriod', async ({ context, payload }) => {
+  try {
+    const projectKey = context.extension.project.key;
+    const accountId = context.accountId;
+    const { periodStart, periodEnd } = payload;
+    const response = await api.asApp().requestJira(
+      route`/rest/api/3/user?accountId=${accountId}`,
+      { headers: { 'Accept': 'application/json' } }
+    );
+    const user = response.ok ? await safeJson(response) : null;
+    const displayName = user?.displayName || 'Unknown User';
+    const lockKey = getLockKey(projectKey, periodStart, periodEnd);
+    await storage.set(lockKey, {
+      lockedBy: accountId,
+      lockedByName: displayName,
+      lockedAt: new Date().toISOString(),
+    });
+    return { success: true };
+  } catch (err) {
+    console.error('lockPeriod error:', err);
+    return { error: 'Failed to lock period' };
+  }
+});
+
+// Unlock a period
+resolver.define('unlockPeriod', async ({ context, payload }) => {
+  try {
+    const projectKey = context.extension.project.key;
+    const { periodStart, periodEnd } = payload;
+    const lockKey = getLockKey(projectKey, periodStart, periodEnd);
+    await storage.delete(lockKey);
+    return { success: true };
+  } catch (err) {
+    console.error('unlockPeriod error:', err);
+    return { error: 'Failed to unlock period' };
+  }
+});
+
+// Submit timesheet for current user
+resolver.define('submitTimesheet', async ({ context, payload }) => {
+  try {
+    const projectKey = context.extension.project.key;
+    const accountId = context.accountId;
+    const { periodStart, periodEnd } = payload;
+    const response = await api.asApp().requestJira(
+      route`/rest/api/3/user?accountId=${accountId}`,
+      { headers: { 'Accept': 'application/json' } }
+    );
+    const user = response.ok ? await safeJson(response) : null;
+    const displayName = user?.displayName || 'Unknown User';
+    const subsKey = getSubsKey(projectKey, periodStart, periodEnd);
+    const submissions = (await storage.get(subsKey)) || {};
+    submissions[accountId] = {
+      status: 'submitted',
+      submittedAt: new Date().toISOString(),
+      submittedByName: displayName,
+      reviewedBy: null,
+      reviewedByName: null,
+      reviewedAt: null,
+    };
+    await storage.set(subsKey, submissions);
+    return { success: true };
+  } catch (err) {
+    console.error('submitTimesheet error:', err);
+    return { error: 'Failed to submit timesheet' };
+  }
+});
+
+// Review (approve/reject) a user's timesheet submission
+resolver.define('reviewTimesheet', async ({ context, payload }) => {
+  try {
+    const projectKey = context.extension.project.key;
+    const reviewerId = context.accountId;
+    const { periodStart, periodEnd, targetAccountId, action } = payload;
+    if (action !== 'approved' && action !== 'rejected') {
+      return { error: 'Invalid action. Must be approved or rejected.' };
+    }
+    const reviewerResp = await api.asApp().requestJira(
+      route`/rest/api/3/user?accountId=${reviewerId}`,
+      { headers: { 'Accept': 'application/json' } }
+    );
+    const reviewer = reviewerResp.ok ? await safeJson(reviewerResp) : null;
+    const reviewerName = reviewer?.displayName || 'Unknown User';
+    const subsKey = getSubsKey(projectKey, periodStart, periodEnd);
+    const submissions = (await storage.get(subsKey)) || {};
+    if (!submissions[targetAccountId]) {
+      return { error: 'No submission found for this user.' };
+    }
+    submissions[targetAccountId].status = action;
+    submissions[targetAccountId].reviewedBy = reviewerId;
+    submissions[targetAccountId].reviewedByName = reviewerName;
+    submissions[targetAccountId].reviewedAt = new Date().toISOString();
+    await storage.set(subsKey, submissions);
+    return { success: true };
+  } catch (err) {
+    console.error('reviewTimesheet error:', err);
+    return { error: 'Failed to review timesheet' };
   }
 });
 

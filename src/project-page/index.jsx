@@ -117,10 +117,16 @@ const ProjectPage = () => {
   const [exporting, setExporting] = useState(false);
   const [selectedIssueKey, setSelectedIssueKey] = useState(null);
   const [selectedPersonName, setSelectedPersonName] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [periodStatus, setPeriodStatus] = useState({ lock: null, submissions: {} });
+  const [lockLoading, setLockLoading] = useState(false);
+  const [submitLoading, setSubmitLoading] = useState(false);
+  const [reviewLoading, setReviewLoading] = useState(false);
 
   const fetchData = async (selectedPeriod, startOverride, endOverride) => {
     setLoading(true);
     setError(null);
+    setPeriodStatus({ lock: null, submissions: {} });
     try {
       const p = selectedPeriod || period;
       var payload = { period: p };
@@ -158,6 +164,23 @@ const ProjectPage = () => {
     fetchData('all');
   }, []);
 
+  // Fetch current user on mount
+  useEffect(function () {
+    invoke('getCurrentUser').then(function (result) {
+      if (result && !result.error) setCurrentUser(result);
+    }).catch(function () {});
+  }, []);
+
+  // Fetch period status when data changes
+  useEffect(function () {
+    if (data && data.periodStart && data.periodEnd) {
+      invoke('getPeriodStatus', { periodStart: data.periodStart, periodEnd: data.periodEnd })
+        .then(function (result) {
+          if (result) setPeriodStatus(result);
+        }).catch(function () {});
+    }
+  }, [data]);
+
   // Extract data (safe even when data is null)
   const entries = data && data.entries ? data.entries : [];
   const totalSeconds = data ? (data.totalSeconds || 0) : 0;
@@ -187,7 +210,7 @@ const ProjectPage = () => {
       filteredEntries.forEach(function (entry) {
         var key = entry.authorId || entry.author;
         if (!userMap[key]) {
-          userMap[key] = { name: entry.author, totalSeconds: 0, entryCount: 0 };
+          userMap[key] = { accountId: entry.authorId || entry.author, name: entry.author, totalSeconds: 0, entryCount: 0 };
         }
         userMap[key].totalSeconds += entry.timeSpentSeconds;
         userMap[key].entryCount += 1;
@@ -270,6 +293,7 @@ const ProjectPage = () => {
       var personEntries = entries.filter(function (e) { return e.author === selectedPersonName; });
       if (personEntries.length === 0) return null;
       var personTotalSeconds = personEntries.reduce(function (sum, e) { return sum + (e.timeSpentSeconds || 0); }, 0);
+      var accountId = personEntries[0] ? (personEntries[0].authorId || null) : null;
       var issueMap = {};
       personEntries.forEach(function (e) {
         var key = e.issueKey;
@@ -288,6 +312,7 @@ const ProjectPage = () => {
       });
       var issues = Object.values(issueMap).sort(function (a, b) { return b.totalSeconds - a.totalSeconds; });
       return {
+        accountId: accountId,
         name: selectedPersonName,
         totalSeconds: personTotalSeconds,
         totalEntries: personEntries.length,
@@ -297,6 +322,61 @@ const ProjectPage = () => {
     },
     [selectedPersonName, entries]
   );
+
+  // Current user's submission status
+  const mySubmissionStatus = useMemo(
+    function () {
+      if (!currentUser || !periodStatus.submissions) return 'draft';
+      var sub = periodStatus.submissions[currentUser.accountId];
+      return sub ? sub.status : 'draft';
+    },
+    [currentUser, periodStatus]
+  );
+
+  // Handlers for lock/submit/review
+  var handleLockPeriod = async function () {
+    if (!data || !data.periodStart || !data.periodEnd) return;
+    setLockLoading(true);
+    try {
+      await invoke('lockPeriod', { periodStart: data.periodStart, periodEnd: data.periodEnd });
+      var result = await invoke('getPeriodStatus', { periodStart: data.periodStart, periodEnd: data.periodEnd });
+      if (result) setPeriodStatus(result);
+    } catch (err) { console.error('Lock failed:', err); }
+    setLockLoading(false);
+  };
+
+  var handleUnlockPeriod = async function () {
+    if (!data || !data.periodStart || !data.periodEnd) return;
+    setLockLoading(true);
+    try {
+      await invoke('unlockPeriod', { periodStart: data.periodStart, periodEnd: data.periodEnd });
+      var result = await invoke('getPeriodStatus', { periodStart: data.periodStart, periodEnd: data.periodEnd });
+      if (result) setPeriodStatus(result);
+    } catch (err) { console.error('Unlock failed:', err); }
+    setLockLoading(false);
+  };
+
+  var handleSubmitTimesheet = async function () {
+    if (!data || !data.periodStart || !data.periodEnd) return;
+    setSubmitLoading(true);
+    try {
+      await invoke('submitTimesheet', { periodStart: data.periodStart, periodEnd: data.periodEnd });
+      var result = await invoke('getPeriodStatus', { periodStart: data.periodStart, periodEnd: data.periodEnd });
+      if (result) setPeriodStatus(result);
+    } catch (err) { console.error('Submit failed:', err); }
+    setSubmitLoading(false);
+  };
+
+  var handleReviewTimesheet = async function (targetAccountId, action) {
+    if (!data || !data.periodStart || !data.periodEnd) return;
+    setReviewLoading(true);
+    try {
+      await invoke('reviewTimesheet', { periodStart: data.periodStart, periodEnd: data.periodEnd, targetAccountId: targetAccountId, action: action });
+      var result = await invoke('getPeriodStatus', { periodStart: data.periodStart, periodEnd: data.periodEnd });
+      if (result) setPeriodStatus(result);
+    } catch (err) { console.error('Review failed:', err); }
+    setReviewLoading(false);
+  };
 
   var handleExport = async function () {
     setExporting(true);
@@ -430,6 +510,7 @@ const ProjectPage = () => {
       { key: 'entries', content: 'Entries', isSortable: true },
       { key: 'issues', content: 'Issues', isSortable: true },
       { key: 'share', content: '% Share', isSortable: true },
+      { key: 'status', content: 'Status', isSortable: true },
     ],
   };
 
@@ -439,6 +520,9 @@ const ProjectPage = () => {
       ? Math.round((user.totalSeconds / baseTotalForPeople) * 100)
       : 0;
     var issueCount = personIssueCounts[user.name] || 0;
+    var subInfo = periodStatus.submissions[user.accountId];
+    var userStatus = subInfo ? subInfo.status : 'draft';
+    var statusAppearance = userStatus === 'approved' ? 'success' : userStatus === 'rejected' ? 'removed' : userStatus === 'submitted' ? 'inprogress' : 'default';
     return {
       key: 'user-' + index,
       cells: [
@@ -472,6 +556,14 @@ const ProjectPage = () => {
           content: (
             <Lozenge appearance={pct >= 30 ? 'success' : 'default'}>
               {pct}%
+            </Lozenge>
+          ),
+        },
+        {
+          key: 'status',
+          content: (
+            <Lozenge appearance={statusAppearance}>
+              {userStatus.charAt(0).toUpperCase() + userStatus.slice(1)}
             </Lozenge>
           ),
         },
@@ -601,11 +693,28 @@ const ProjectPage = () => {
               </Lozenge>
             </Inline>
           </Stack>
-          <Button appearance="primary" onClick={handleExport} isDisabled={exporting}>
-            {exporting ? 'Exporting...' : 'Export CSV'}
-          </Button>
+          <Inline space="space.100">
+            <Button appearance="primary" onClick={handleExport} isDisabled={exporting}>
+              {exporting ? 'Exporting...' : 'Export CSV'}
+            </Button>
+            {periodStatus.lock ? (
+              <Button appearance="warning" onClick={handleUnlockPeriod} isDisabled={lockLoading}>
+                {lockLoading ? 'Processing...' : 'Unlock Period'}
+              </Button>
+            ) : (
+              <Button onClick={handleLockPeriod} isDisabled={lockLoading}>
+                {lockLoading ? 'Processing...' : 'Lock Period'}
+              </Button>
+            )}
+          </Inline>
         </Inline>
       </Box>
+
+      {periodStatus.lock && (
+        <SectionMessage appearance="warning">
+          <Text>Period Locked by {periodStatus.lock.lockedByName} on {new Date(periodStatus.lock.lockedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}. Timesheets for this period are finalized.</Text>
+        </SectionMessage>
+      )}
 
       <Stack space="space.100">
         <Inline space="space.100">
@@ -722,6 +831,28 @@ const ProjectPage = () => {
 
       {view === 'people' && (
         <Stack space="space.100">
+          {currentUser && (
+            <Inline space="space.200" alignBlock="center">
+              <Text>My Timesheet:</Text>
+              <Lozenge appearance={mySubmissionStatus === 'approved' ? 'success' : mySubmissionStatus === 'rejected' ? 'removed' : mySubmissionStatus === 'submitted' ? 'inprogress' : 'default'}>
+                {mySubmissionStatus.charAt(0).toUpperCase() + mySubmissionStatus.slice(1)}
+              </Lozenge>
+              {mySubmissionStatus === 'draft' && !periodStatus.lock && (
+                <Button appearance="primary" onClick={handleSubmitTimesheet} isDisabled={submitLoading}>
+                  {submitLoading ? 'Submitting...' : 'Submit My Timesheet'}
+                </Button>
+              )}
+              {mySubmissionStatus === 'submitted' && (
+                <Text>Awaiting review</Text>
+              )}
+              {mySubmissionStatus === 'approved' && currentUser && periodStatus.submissions[currentUser.accountId] && periodStatus.submissions[currentUser.accountId].reviewedByName && (
+                <Text>Approved by {periodStatus.submissions[currentUser.accountId].reviewedByName}</Text>
+              )}
+              {mySubmissionStatus === 'rejected' && currentUser && periodStatus.submissions[currentUser.accountId] && periodStatus.submissions[currentUser.accountId].reviewedByName && (
+                <Text>Rejected by {periodStatus.submissions[currentUser.accountId].reviewedByName}</Text>
+              )}
+            </Inline>
+          )}
           {filteredUserSummary.length === 0 ? (
             <SectionMessage appearance="information">
               <Text>No results match your search.</Text>
@@ -860,6 +991,21 @@ const ProjectPage = () => {
                   <Lozenge appearance="inprogress">{selectedPersonData.issueCount} {selectedPersonData.issueCount === 1 ? 'issue' : 'issues'}</Lozenge>
                   <Lozenge appearance="moved">{selectedPersonData.totalEntries} {selectedPersonData.totalEntries === 1 ? 'entry' : 'entries'}</Lozenge>
                 </Inline>
+                {selectedPersonData.accountId && periodStatus.submissions[selectedPersonData.accountId] && (
+                  <Inline space="space.100" alignBlock="center">
+                    <Text>Timesheet Status:</Text>
+                    <Lozenge appearance={
+                      periodStatus.submissions[selectedPersonData.accountId].status === 'approved' ? 'success' :
+                      periodStatus.submissions[selectedPersonData.accountId].status === 'rejected' ? 'removed' :
+                      'inprogress'
+                    }>
+                      {periodStatus.submissions[selectedPersonData.accountId].status.charAt(0).toUpperCase() + periodStatus.submissions[selectedPersonData.accountId].status.slice(1)}
+                    </Lozenge>
+                    {periodStatus.submissions[selectedPersonData.accountId].reviewedByName && (
+                      <Text>by {periodStatus.submissions[selectedPersonData.accountId].reviewedByName}</Text>
+                    )}
+                  </Inline>
+                )}
                 <DynamicTable
                   head={{
                     cells: [
@@ -925,9 +1071,25 @@ const ProjectPage = () => {
               </Stack>
             </ModalBody>
             <ModalFooter>
-              <Button appearance="primary" onClick={function () { setSelectedPersonName(null); }}>
-                Close
-              </Button>
+              <Inline space="space.100">
+                {selectedPersonData.accountId &&
+                 periodStatus.submissions[selectedPersonData.accountId] &&
+                 periodStatus.submissions[selectedPersonData.accountId].status === 'submitted' && (
+                  <Button appearance="primary" onClick={function () { handleReviewTimesheet(selectedPersonData.accountId, 'approved'); }} isDisabled={reviewLoading}>
+                    {reviewLoading ? 'Processing...' : 'Approve'}
+                  </Button>
+                )}
+                {selectedPersonData.accountId &&
+                 periodStatus.submissions[selectedPersonData.accountId] &&
+                 periodStatus.submissions[selectedPersonData.accountId].status === 'submitted' && (
+                  <Button appearance="danger" onClick={function () { handleReviewTimesheet(selectedPersonData.accountId, 'rejected'); }} isDisabled={reviewLoading}>
+                    {reviewLoading ? 'Processing...' : 'Reject'}
+                  </Button>
+                )}
+                <Button appearance="subtle" onClick={function () { setSelectedPersonName(null); }}>
+                  Close
+                </Button>
+              </Inline>
             </ModalFooter>
           </Modal>
         )}
