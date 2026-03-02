@@ -18,6 +18,18 @@ modules:
       resolver:
         function: resolver
       route: worklog-report
+  jira:dashboardGadget:
+    - key: worklog-insights-gadget
+      title: Work Log Insights
+      description: Dashboard gadget showing work log visualizations — top contributors, issue breakdown, time distribution and daily activity
+      thumbnail: https://api.iconify.design/mdi/chart-pie.svg
+      resource: dashboardGadget
+      render: native
+      resolver:
+        function: resolver
+      edit:
+        resource: dashboardGadgetEdit
+        render: native
   webtrigger:
     - key: csv-export
       function: csvExportFunction
@@ -31,6 +43,10 @@ resources:
     path: src/frontend/index.jsx
   - key: projectPage
     path: src/project-page/index.jsx
+  - key: dashboardGadget
+    path: src/dashboard-gadget/index.jsx
+  - key: dashboardGadgetEdit
+    path: src/dashboard-gadget/edit.jsx
 permissions:
   scopes:
     - read:jira-work

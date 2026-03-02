@@ -415,6 +415,147 @@ resolver.define('reviewTimesheet', async ({ context, payload }) => {
   }
 });
 
+// Resolver 3: Dashboard gadget worklogs (accepts projectKey from gadget config)
+resolver.define('getDashboardWorklogs', async ({ payload }) => {
+  try {
+    const projectKey = payload?.projectKey;
+    if (!projectKey) return { error: 'No project configured. Please edit this gadget to select a project.' };
+
+    const period = payload?.period || 'month';
+    const now = new Date();
+    let startDate;
+    let endDate = now;
+
+    if (period === 'week') {
+      startDate = new Date(now);
+      startDate.setDate(startDate.getDate() - 7);
+    } else if (period === 'month') {
+      startDate = new Date(now);
+      startDate.setMonth(startDate.getMonth() - 1);
+    } else if (period === 'quarter') {
+      startDate = new Date(now);
+      startDate.setMonth(startDate.getMonth() - 3);
+    } else {
+      startDate = new Date(now);
+      startDate.setMonth(startDate.getMonth() - 1);
+    }
+
+    const jql = `project = "${projectKey}" AND worklogDate >= "${formatDateForJQL(startDate)}" ORDER BY updated DESC`;
+    console.log(`[Dashboard] JQL: ${jql}, period: ${period}`);
+
+    const searchResponse = await api.asApp().requestJira(
+      route`/rest/api/3/search/jql?jql=${jql}&maxResults=${String(MAX_ISSUES_TO_SCAN)}&fields=summary,status,issuetype,sprint`,
+      { headers: { 'Accept': 'application/json' } }
+    );
+
+    if (!searchResponse.ok) {
+      const errorText = await searchResponse.text().catch(() => '');
+      console.error(`[Dashboard] Search error: ${searchResponse.status} ${errorText}`);
+      return { error: `Failed to search issues (${searchResponse.status})` };
+    }
+
+    const searchData = await safeJson(searchResponse);
+    if (!searchData) return { error: 'Failed to parse search results.' };
+
+    const issues = searchData.issues || [];
+    const allEntries = [];
+    const issueMap = {};
+
+    for (let i = 0; i < issues.length; i += PARALLEL_BATCH_SIZE) {
+      const batch = issues.slice(i, i + PARALLEL_BATCH_SIZE);
+      const batchResults = await Promise.all(
+        batch.map(async (issue) => {
+          const issueKey = issue.key;
+          const issueSummary = issue.fields?.summary || issueKey;
+          const issueStatus = issue.fields?.status?.name || 'Unknown';
+          const issueType = issue.fields?.issuetype?.name || 'Unknown';
+          const sprintName = getSprintName(issue.fields?.sprint);
+          try {
+            const worklogs = await fetchAllWorklogsForIssue(issueKey);
+            const filteredLogs = worklogs.filter((log) => {
+              const logDate = new Date(log.started);
+              return logDate >= startDate && logDate <= endDate;
+            });
+            return { issueKey, issueSummary, issueStatus, issueType, sprintName, filteredLogs };
+          } catch (err) {
+            console.error(`Dashboard: worklog fetch error for ${issueKey}:`, err);
+            return { issueKey, issueSummary, issueStatus, issueType, sprintName, filteredLogs: [] };
+          }
+        })
+      );
+
+      for (const { issueKey, issueSummary, issueStatus, issueType, sprintName, filteredLogs } of batchResults) {
+        let issueTotal = 0;
+        filteredLogs.forEach((log) => {
+          const entry = processWorklogEntry(log, { issueKey, issueSummary, issueStatus, issueType, sprintName });
+          allEntries.push(entry);
+          issueTotal += log.timeSpentSeconds || 0;
+        });
+        if (filteredLogs.length > 0) {
+          issueMap[issueKey] = {
+            key: issueKey,
+            summary: issueSummary,
+            status: issueStatus,
+            issueType,
+            sprintName,
+            totalSeconds: issueTotal,
+            entryCount: filteredLogs.length,
+          };
+        }
+      }
+    }
+
+    allEntries.sort((a, b) => new Date(b.dateRaw) - new Date(a.dateRaw));
+    const totalSeconds = allEntries.reduce((sum, e) => sum + e.timeSpentSeconds, 0);
+    const userSummary = aggregateByUser(allEntries);
+    const issueSummary = Object.values(issueMap).sort((a, b) => b.totalSeconds - a.totalSeconds);
+
+    // Build daily breakdown for line chart
+    const dailyMap = {};
+    allEntries.forEach((e) => {
+      const day = e.dateRaw ? e.dateRaw.substring(0, 10) : e.date;
+      if (!dailyMap[day]) dailyMap[day] = 0;
+      dailyMap[day] += e.timeSpentSeconds;
+    });
+    const dailyActivity = Object.keys(dailyMap).sort().map((day) => ({
+      date: day,
+      hours: Math.round((dailyMap[day] / 3600) * 100) / 100,
+    }));
+
+    // Build issue type breakdown for pie/donut chart
+    const typeMap = {};
+    allEntries.forEach((e) => {
+      const t = e.issueType || 'Unknown';
+      if (!typeMap[t]) typeMap[t] = 0;
+      typeMap[t] += e.timeSpentSeconds;
+    });
+    const issueTypeBreakdown = Object.keys(typeMap).map((t) => ({
+      type: t,
+      label: t,
+      hours: Math.round((typeMap[t] / 3600) * 100) / 100,
+    }));
+
+    console.log(`[Dashboard] Result: ${allEntries.length} entries, ${userSummary.length} users, ${issueSummary.length} issues`);
+
+    return {
+      entries: allEntries,
+      totalSeconds,
+      userSummary,
+      issueSummary,
+      dailyActivity,
+      issueTypeBreakdown,
+      period,
+      projectKey,
+      issueCount: issues.length,
+      periodStart: formatDateForJQL(startDate),
+      periodEnd: formatDateForJQL(endDate),
+    };
+  } catch (err) {
+    console.error('getDashboardWorklogs error:', err);
+    return { error: 'An unexpected error occurred. Please try again.' };
+  }
+});
+
 // Resolver: Prepare CSV export (store in Forge storage, return webtrigger download URL)
 resolver.define('prepareExport', async ({ payload }) => {
   try {

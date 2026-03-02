@@ -128,7 +128,7 @@ const App = () => {
         setMembersLoading(false);
       }).catch(function () { setGroupMembers([]); setMembersLoading(false); });
     } else {
-      setGroupMembers([]);
+              setGroupMembers([]);
     }
   }, [selectedGroup]);
 
